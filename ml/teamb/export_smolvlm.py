@@ -52,6 +52,10 @@ def download_tokenizer(model_id: str, dest_dir: Path) -> Path:
 
 
 def package_handoff(out_dir: Path, zip_path: Path) -> Path:
+    io_spec = Path(__file__).resolve().parent / "IO_SPEC.md"
+    if io_spec.is_file():
+        shutil.copy2(io_spec, out_dir / "IO_SPEC.md")
+
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     if zip_path.exists():
         zip_path.unlink()
