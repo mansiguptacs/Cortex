@@ -29,4 +29,23 @@ class SceneNarrationTest {
     @Test fun cleanNormalizesWhitespaceAndPunctuation() {
         assertEquals("A kitchen with a table.", SceneNarration.clean("  a kitchen   with a table  "))
     }
+
+    @Test fun sceneEmpty() {
+        assertEquals(
+            "I can't quite tell what kind of space this is.",
+            SceneNarration.fromScene(emptyList()),
+        )
+    }
+
+    @Test fun sceneOneUsesArticle() {
+        assertEquals("You appear to be in an office.", SceneNarration.fromScene(listOf("office")))
+        assertEquals("You appear to be in a kitchen.", SceneNarration.fromScene(listOf("kitchen")))
+    }
+
+    @Test fun sceneTwoHedges() {
+        assertEquals(
+            "This looks like a corridor, possibly a lobby.",
+            SceneNarration.fromScene(listOf("corridor", "lobby")),
+        )
+    }
 }

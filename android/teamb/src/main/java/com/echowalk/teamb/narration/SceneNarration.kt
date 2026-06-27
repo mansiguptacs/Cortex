@@ -20,6 +20,25 @@ object SceneNarration {
         }
     }
 
+    /**
+     * Turn top scene-classifier guesses (e.g. ["office", "corridor"]) into a spoken sentence
+     * about the *kind of space* the user is in. Expects bare scene names (no article).
+     */
+    fun fromScene(scenes: List<String>): String {
+        val unique = scenes.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        return when (unique.size) {
+            0 -> "I can't quite tell what kind of space this is."
+            1 -> "You appear to be in ${withArticle(unique[0])}."
+            else -> "This looks like ${withArticle(unique[0])}, possibly ${withArticle(unique[1])}."
+        }
+    }
+
+    private fun withArticle(label: String): String {
+        if (label.isEmpty()) return label
+        val article = if (label.first().lowercaseChar() in "aeiou") "an" else "a"
+        return "$article $label"
+    }
+
     /** Normalize raw model text into something clean to speak. */
     fun clean(raw: String): String =
         raw.trim()

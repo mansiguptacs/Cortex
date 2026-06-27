@@ -25,7 +25,7 @@ object SceneDescribers {
     /** Short tag for the UI/logs describing which engine actually got built. */
     fun engineLabel(describer: SceneDescriber): String = when (describer) {
         is SmolVlmSceneDescriber -> "VLM"
-        is ClassifierSceneDescriber -> "TAGS"
+        is ClassifierSceneDescriber -> describer.engine
         else -> "MOCK"
     }
 }

@@ -24,10 +24,15 @@ class ClassifierSceneDescriber private constructor(
     private val module: EtModule,
     private val labels: List<String>,
     private val fallback: SceneDescriber,
+    /** scene classifier (Places365) -> "You appear to be in ..."; else object -> "I see ...". */
+    private val sceneMode: Boolean,
 ) : SceneDescriber, SceneDiagnostics {
 
     @Volatile
     private var lastTopK: List<LabelScore> = emptyList()
+
+    /** HUD/log tag: scene classifier vs object classifier. */
+    val engine: String get() = if (sceneMode) "SCENE" else "TAGS"
 
     override fun lastTopK(): List<LabelScore> = lastTopK
 
@@ -41,9 +46,18 @@ class ClassifierSceneDescriber private constructor(
             )
             val logits = module.forward(input, intArrayOf(1, 3, INPUT_SIZE, INPUT_SIZE)).firstOrNull()
                 ?: return@withContext fallback.describe(frame)
-            lastTopK = Classification.scoredTopK(logits, labels, k = TOP_K)
-            val phrases = Classification.toPhrases(logits, labels, k = TOP_K)
-            SceneNarration.fromTags(phrases)
+            val scored = Classification.scoredTopK(logits, labels, k = TOP_K)
+            lastTopK = scored
+            if (sceneMode) {
+                // Always speak the best scene; add a hedge only if the runner-up is plausible.
+                val tags = buildList {
+                    scored.getOrNull(0)?.let { add(it.label) }
+                    scored.getOrNull(1)?.takeIf { it.prob >= SCENE_SECOND_MIN }?.let { add(it.label) }
+                }
+                SceneNarration.fromScene(tags)
+            } else {
+                SceneNarration.fromTags(Classification.toPhrases(logits, labels, k = TOP_K))
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "Classifier inference failed; using fallback", t)
             fallback.describe(frame)
@@ -56,8 +70,12 @@ class ClassifierSceneDescriber private constructor(
         private const val TAG = "ClassifierSceneDescriber"
         private const val MODEL_ASSET = "classifier.pte"
         private const val LABELS_ASSET = "labels.txt"
+        private const val KIND_ASSET = "classifier_kind.txt"
         private const val INPUT_SIZE = 224
         private const val TOP_K = 3
+
+        /** Min softmax prob for the *second* scene guess before we voice the "possibly ..." hedge. */
+        private const val SCENE_SECOND_MIN = 0.15f
 
         /** Build the classifier describer if `classifier.pte` + `labels.txt` are bundled, else [fallback]. */
         fun create(
@@ -73,9 +91,10 @@ class ClassifierSceneDescriber private constructor(
                 Log.w(TAG, "No '$LABELS_ASSET' (or empty) -> using ${fallback::class.simpleName}")
                 return fallback
             }
+            val sceneMode = readKind(context) == "scene"
             return try {
-                Log.i(TAG, "Loading classifier from $path with ${labels.size} labels")
-                ClassifierSceneDescriber(ExecuTorchModule.load(path), labels, fallback)
+                Log.i(TAG, "Loading classifier from $path: ${labels.size} labels, sceneMode=$sceneMode")
+                ClassifierSceneDescriber(ExecuTorchModule.load(path), labels, fallback, sceneMode)
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to load '$MODEL_ASSET' -> using ${fallback::class.simpleName}", t)
                 fallback
@@ -88,6 +107,13 @@ class ClassifierSceneDescriber private constructor(
             }
         } catch (e: Exception) {
             emptyList()
+        }
+
+        /** Optional `classifier_kind.txt` marker ("scene" | "object"); defaults to object. */
+        private fun readKind(context: Context): String = try {
+            context.assets.open(KIND_ASSET).bufferedReader().use { it.readText().trim().lowercase() }
+        } catch (e: Exception) {
+            "object"
         }
     }
 }

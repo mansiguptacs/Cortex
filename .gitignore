@@ -27,6 +27,7 @@ ml/teamb/models/
 ml/teamb/exports/
 ml/teamb/handoff/
 ml/teamb/cache/
+ml/teamb/.cache/
 
 # Local scratch (not committed)
 donotcheckin/
