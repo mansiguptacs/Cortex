@@ -1,7 +1,7 @@
 # Android / Gradle
 .gradle/
 build/
-core/build/
+.kotlin/
 android/.gradle/
 android/build/
 android/app/build/
