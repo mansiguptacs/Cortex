@@ -36,6 +36,11 @@ android {
     }
     // QNN .so libraries go in app/src/main/jniLibs/arm64-v8a/.
     // .pte model files go in app/src/main/assets/ (or are pushed to /data/local/tmp during dev).
+    packaging {
+        // The Hexagon DSP loads libQnnHtpV79Skel.so via FastRPC, which uses fopen() — it
+        // can't read libs that AGP packs compressed-in-APK. Force extraction to disk.
+        jniLibs.useLegacyPackaging = true
+    }
 }
 
 dependencies {

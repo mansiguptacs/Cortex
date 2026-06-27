@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
-        <!-- Team A isolation harness; merged into the app. Launch via adb. -->
-        <activity android:name=".TeamAHarnessActivity" android:exported="false" />
+        <!-- Team A isolation harness; merged into the app. Launch via:
+             adb shell am start -n com.echowalk/com.echowalk.teama.TeamAHarnessActivity -->
+        <activity
+            android:name=".TeamAHarnessActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
     </application>
 </manifest>

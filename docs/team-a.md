@@ -20,10 +20,13 @@ You own the always-on obstacle-avoidance loop and implement `SafetyRadar`.
 ## Test in isolation
 Run `TeamAHarnessActivity` (camera or a saved image/video in, audio out). No dependency on B or C.
 
-## Models
-- Depth: `Depth-Anything-V2-Small`, QNN INT8/w8a16 (~25 ms on 8 Elite). First-party export script
-  exists in `executorch/examples/qualcomm/oss_scripts`.
-- Detection: YOLO nano (AI Hub).
+## Models (Path A: TFLite + QNN delegate, no ExecuTorch)
+- Depth: `Depth-Anything-V2` (518×518 NHWC fp32), AI Hub TFLite export, runs on the QNN HTP
+  delegate. Output is a *relative* depth map (`[1,518,518,1]`); **larger value = closer**.
+- Detection: `YOLOv10-Det` (640×640 NHWC fp32), AI Hub TFLite export, QNN HTP delegate.
+  Emits 8400 anchors with decoded boxes (pixel coords), per-anchor score, and uint8 class id.
+
+Re-generate with `python ml/teama/export_{depth,yolo}.py`.
 
 ## Don't
 - Don't run heavy inference concurrently with the VLM (ModeManager handles pausing).

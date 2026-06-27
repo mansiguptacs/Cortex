@@ -14,6 +14,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.EchoWalk">
 
+        <!--
+          Non-NDK vendor libraries the Qualcomm QNN HTP delegate dlopens at runtime.
+          On Android 12+ apps must whitelist these via <uses-native-library>; without
+          them the QnnHtpV79Stub.so load fails and the delegate falls back to CPU.
+        -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+        <uses-native-library android:name="libadsprpc.so" android:required="false" />
+        <uses-native-library android:name="libsdsprpc.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
