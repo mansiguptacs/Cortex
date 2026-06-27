@@ -34,6 +34,11 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    androidResources {
+        // Keep model/tokenizer assets uncompressed so ExecuTorch can mmap them and large .pte
+        // files don't bloat install-time decompression.
+        noCompress += listOf("pte", "bin", "json", "model")
+    }
     // QNN .so libraries go in app/src/main/jniLibs/arm64-v8a/.
     // .pte model files go in app/src/main/assets/ (or are pushed to /data/local/tmp during dev).
 }

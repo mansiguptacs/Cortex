@@ -2,7 +2,7 @@
 .gradle/
 android/.gradle/
 android/build/
-android/app/build/
+android/**/build/
 android/local.properties
 .idea/
 android/.idea/
