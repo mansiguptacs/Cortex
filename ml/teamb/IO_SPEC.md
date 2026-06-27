@@ -2,20 +2,21 @@
 
 **Model:** HuggingFaceTB/SmolVLM-500M-Instruct  
 **Target SoC:** SM8750 (Galaxy S25 Ultra) via ExecuTorch QNN HTP  
-**Handoff artifacts:** three `.pte` files + `tokenizer/`
+**Handoff artifacts:** three `.pte` files + `tokenizer/`  
+**Packaged:** `ml/teamb/handoff/vlm-handoff-20260627T225746Z.zip` (479 MB)
 
-> Fill in measured values after first on-device run. Jainil updates checksums; Udit confirms latency.
+> Source QNN export names → stable handoff names below. Checksums from Jainil's packaging run.
 
 ---
 
 ## Files (drop in `android/app/src/main/assets/`)
 
-| File | Role |
-| --- | --- |
-| `vlm_encoder.pte` | Vision encoder (image → visual tokens) |
-| `vlm_text_embedding.pte` | Text token embedding |
-| `vlm_decoder.pte` | Autoregressive LLM decoder (KV hybrid mode) |
-| `tokenizer/` | Hugging Face tokenizer JSON (full folder) |
+| Stable name (use this) | Original QNN export | Size | SHA256 |
+| --- | --- | --- | --- |
+| `vlm_encoder.pte` | `vision_encoder_qnn.pte` | 102516224 B | `b0a0a3d8909a5852c8cbf31c5163831aaa316f106f1f3b32e68638377b18ea4d` |
+| `vlm_text_embedding.pte` | `tok_embedding_qnn.pte` | 94689664 B | `ceea15a3491fe0b50333f6671879d4ab29e025f26530102fdd03994d48284565` |
+| `vlm_decoder.pte` | `hybrid_llama_qnn.pte` | 388579712 B | `1509498b703c78fddfdbd806320bda60e26a4b5dc83aaedb4dcbf20982e6c2cd` |
+| `tokenizer/` | `chat_template.jinja`, `tokenizer.json`, `tokenizer_config.json` | 3 files | use QNN-export bundle |
 
 Stable names produced by `python ml/teamb/export_smolvlm.py --prebuilt-dir ... --package`.
 
