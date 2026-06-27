@@ -33,6 +33,6 @@ dependencies {
     api("androidx.camera:camera-view:$cameraxVersion")
 
     // ExecuTorch runtime lives here so the QNN/native setup is in ONE module.
-    // NOTE: confirm the latest version on Maven Central and align with your QNN .so libs.
-    api("org.pytorch:executorch-android:0.7.0")
+    // 0.6.0 is the latest on Maven Central (verified). Align QNN .so libs to this version.
+    api("org.pytorch:executorch-android:0.6.0")
 }
