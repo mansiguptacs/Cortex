@@ -24,3 +24,6 @@ __pycache__/
 venv/
 ml/**/artifacts/
 *.pte
+
+# Eclipse/IDE compiled output
+bin/
