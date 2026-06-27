@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import com.echowalk.shared.AudioOutputManager
 import com.echowalk.shared.camera.CameraXFrameProvider
 import com.echowalk.teamb.vlm.SceneDescribers
+import com.echowalk.teamb.vlm.SceneDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -50,6 +51,7 @@ class TeamBHarnessActivity : AppCompatActivity() {
     private lateinit var capturedThumb: ImageView
     private lateinit var statusText: TextView
     private lateinit var describeButton: Button
+    private lateinit var hudText: TextView
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -64,6 +66,7 @@ class TeamBHarnessActivity : AppCompatActivity() {
         capturedThumb = findViewById(R.id.capturedThumb)
         statusText = findViewById(R.id.statusText)
         describeButton = findViewById(R.id.describeButton)
+        hudText = findViewById(R.id.hudText)
         describeButton.setOnClickListener { onDescribe() }
 
         frames = CameraXFrameProvider(this)
@@ -96,14 +99,29 @@ class TeamBHarnessActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             setState(UiState.THINKING)
-            // Keep inference off the UI thread; the real VLM (U-Step 4) will be CPU/NPU heavy.
+            // Keep inference off the UI thread; the real VLM/classifier pass is CPU/NPU heavy.
+            val startNs = System.nanoTime()
             val text = withContext(Dispatchers.Default) { describer.describe(frame) }
+            val latencyMs = (System.nanoTime() - startNs) / 1_000_000
 
+            renderHud(latencyMs)
             setState(UiState.SPEAKING, detail = text)
             speakAndAwait(text)
 
             setState(UiState.READY)
         }
+    }
+
+    /** Demo HUD: engine + last inference latency + top predictions (when the engine exposes them). */
+    private fun renderHud(latencyMs: Long) {
+        val sb = StringBuilder()
+        sb.append("engine $engineLabel   ${latencyMs} ms")
+        (describer as? SceneDiagnostics)?.lastTopK()?.takeIf { it.isNotEmpty() }?.forEach { ls ->
+            val pct = (ls.prob * 100).toInt()
+            sb.append("\n").append(ls.label.padEnd(16).take(16)).append(" ").append("$pct%")
+        }
+        hudText.text = sb.toString()
+        hudText.visibility = android.view.View.VISIBLE
     }
 
     /** Single place that mutates UI for a state change. Always called on the main thread. */

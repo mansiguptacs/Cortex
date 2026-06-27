@@ -24,7 +24,12 @@ class ClassifierSceneDescriber private constructor(
     private val module: EtModule,
     private val labels: List<String>,
     private val fallback: SceneDescriber,
-) : SceneDescriber {
+) : SceneDescriber, SceneDiagnostics {
+
+    @Volatile
+    private var lastTopK: List<LabelScore> = emptyList()
+
+    override fun lastTopK(): List<LabelScore> = lastTopK
 
     override suspend fun describe(frame: Frame): String = withContext(Dispatchers.Default) {
         try {
@@ -36,6 +41,7 @@ class ClassifierSceneDescriber private constructor(
             )
             val logits = module.forward(input, intArrayOf(1, 3, INPUT_SIZE, INPUT_SIZE)).firstOrNull()
                 ?: return@withContext fallback.describe(frame)
+            lastTopK = Classification.scoredTopK(logits, labels, k = TOP_K)
             val phrases = Classification.toPhrases(logits, labels, k = TOP_K)
             SceneNarration.fromTags(phrases)
         } catch (t: Throwable) {

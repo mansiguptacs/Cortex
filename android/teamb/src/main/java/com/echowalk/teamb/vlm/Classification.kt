@@ -10,6 +10,14 @@ object Classification {
     fun topK(scores: FloatArray, k: Int): List<Int> =
         scores.indices.sortedByDescending { scores[it] }.take(k.coerceAtMost(scores.size))
 
+    /** Top-k cleaned labels with their softmax probabilities (unfiltered), for HUD/diagnostics. */
+    fun scoredTopK(scores: FloatArray, labels: List<String>, k: Int = 3): List<LabelScore> {
+        val probs = softmax(scores)
+        return topK(scores, k).mapNotNull { idx ->
+            labels.getOrNull(idx)?.let { LabelScore(cleanLabel(it), probs.getOrElse(idx) { 0f }) }
+        }
+    }
+
     /**
      * Map top-k indices to spoken phrases, dropping anything below [minScore] (after softmax) so we
      * don't narrate low-confidence guesses. Returns articled phrases like "a coffee mug".

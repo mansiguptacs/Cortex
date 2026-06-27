@@ -4,12 +4,33 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
-    <!-- Live camera preview (owned by the shared FrameProvider). -->
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
+    <!-- Live camera preview with a demo HUD overlay (latency + top predictions). -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_weight="1">
+
+        <androidx.camera.view.PreviewView
+            android:id="@+id/previewView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/hudText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="10dp"
+            android:background="#99000000"
+            android:padding="8dp"
+            android:fontFamily="monospace"
+            android:textColor="#FF66FF99"
+            android:textSize="13sp"
+            android:lineSpacingExtra="2dp"
+            android:text="HUD"
+            android:visibility="gone" />
+
+    </FrameLayout>
 
     <!-- The frame captured when "Describe" is tapped (sanity check). -->
     <ImageView
