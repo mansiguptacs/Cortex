@@ -21,13 +21,16 @@ todos:
     content: "[TEAM A] SpatialAudioEngine + haptics: distance->pitch/cadence, azimuth->pan, hazard/hum/drop-off timbres, <2m throttle (M5). TEST: blindfold obstacle course."
     status: pending
   - id: b1
-    content: "[TEAM B] Export SmolVLM-500M to QNN HTP .pte (+ tags+Llama-3.2-1B fallback). TEST: VLM produces text from an image on device."
+    content: "[TEAM B — Jainil] Export SmolVLM-500M to QNN HTP .pte (+ Llama-3.2-1B fallback .pte if needed). Prefer AI Hub pre-exports. Deliver vlm.pte + tokenizer + I/O spec on branch. TEST: export script runs; artifacts ready for assets/."
+    status: pending
+  - id: b1v
+    content: "[TEAM B — Udit] On-device validation on S25 Ultra: push Jainil's .pte to assets/, run SimpleADB or TeamBHarnessActivity. TEST: VLM produces text from an image on NPU."
     status: pending
   - id: b2
-    content: "[TEAM B] SceneDescriber module implementing the shared interface: frame -> VLM -> text. TEST: in a harness activity, returns plausible description."
+    content: "[TEAM B — Udit] SmolVlmSceneDescriber + TeamBHarnessActivity: load .pte via EtModule, preprocess Frame, decode text, speak via TTS stub. TEST: Describe button returns plausible spoken description."
     status: pending
   - id: b3
-    content: "[TEAM B] Hotkey + TTS flow: volume-key/tap -> capture frame -> describe -> Android TTS (M6). TEST: press in a room, hear description, fully offline."
+    content: "[TEAM B — Udit] Hotkey + TTS + audio bus: SpeechOutput wrapper, volume-key/tap via ModeManager, route through AudioOutputManager (M6). TEST: press in a room, hear description within a few seconds, fully offline."
     status: pending
   - id: c0
     content: "[TEAM C] Embedding model on NPU (CLIP/MobileCLIP image encoder) -> vector per frame (M-C0). TEST: same-spot photos high cosine sim, different-spot low."
@@ -141,8 +144,8 @@ flowchart TD
 
 ### Daily checkpoints (tie milestones to the clock)
 - **Sat midday:** Shared foundation done (M0 + skeleton + contracts); teams fork.
-- **Sat end of day:** Team A has M2 demoable; Team B has VLM producing text in a harness; Team C has M-C0 (embedding similarity working).
-- **Sun midday:** Team A at M5; Team B at M6 on device; Team C at M-C2 (localization); begin integration.
+- **Sat end of day:** Team A has M2 demoable; Team B has VLM producing text in Udit's harness (Jainil's `.pte` landed); Team C has M-C0 (embedding similarity working).
+- **Sun midday:** Team A at M5; Team B at M6 on device (Udit); Team C at M-C2 (localization); begin integration.
 - **Sun afternoon:** INT done; M7 — frozen build + rehearsed demo.
 
 ## Multi-team parallel structure
@@ -166,9 +169,11 @@ flowchart TD
     a_audio[SpatialAudioEngine + haptics]
   end
   subgraph B [Team B - Scene Description - on demand]
-    b_model[SmolVLM .pte / fallback]
-    b_desc[SceneDescriber]
-    b_tts[Hotkey + TTS]
+    b_model[Jainil: SmolVLM .pte export]
+    b_validate[Udit: S25 on-device validation]
+    b_desc[Udit: SceneDescriber + harness]
+    b_tts[Udit: Hotkey + TTS + AudioOutputManager]
+    b_model --> b_validate --> b_desc --> b_tts
   end
   subgraph C [Team C - Familiar Places - learned]
     c_model[CLIP/MobileCLIP encoder .pte]
@@ -229,9 +234,37 @@ Rules baked into the contract:
 - **Independent test path:** drive `SafetyRadarController` from the live camera (or a saved image/video), render the heatmap overlay, and listen — needs nothing from Team B. Acceptance = M1->M5 tests.
 
 ### Team B — Scene Description (owns on-demand mode; milestone M6)
-- Export `SmolVLM-500M` QNN HTP `.pte` (+ tags+Llama-3.2-1B fallback) (uses shared toolchain + `EtModule`).
-- Implement `SceneDescriber.describe(frame)` -> text; wire hotkey capture + Android `TextToSpeech`.
-- **Independent test path:** a standalone harness activity with a "Describe" button that captures one frame and speaks the result — needs nothing from Team A. Acceptance = M6 test.
+
+**Owners:** Jainil (ML / Python, no Android Studio) + Udit (Kotlin / Android, S25 Ultra tester).
+
+#### Jainil — ML export & artifacts
+- Implement `ml/teamb/export_smolvlm.py` and shared helpers in `ml/shared/export_utils.py`.
+- Export primary **`SmolVLM-500M`** → `vlm.pte` + tokenizer (prefer Qualcomm AI Hub / Hugging Face pre-exports over compiling from scratch).
+- Optional fallback (only if primary VLM is blocked): export **`Llama-3.2-1B`** `.pte` (tags come from **Team A's YOLO**, not Jainil).
+- Push on branch: `.pte`, tokenizer, export script, and a short **I/O spec** (input shape/preprocessing, prompt template, output format).
+- Drop artifacts into `android/app/src/main/assets/` (or document paths for Udit to copy).
+- **Does not need:** Android Studio, Kotlin, camera, TTS, hotkeys, or the S25 for local dev (optional ADB sanity check if phone is available).
+
+#### Udit — Android integration & on-device testing
+- **Validate on S25 Ultra:** load Jainil's `.pte` in `android/app/src/main/assets/`; confirm NPU inference via `SimpleADB` or harness.
+- Implement **`SmolVlmSceneDescriber`** (`SceneDescriber.describe(frame)` → spoken-ready text) using shared `EtModule`.
+- Implement **`teamb/tts/SpeechOutput`** (Android on-device `TextToSpeech`).
+- Wire **`TeamBHarnessActivity`**: Describe button → capture one frame → describe → speak (isolated test, no Team A/C).
+- Wire **hotkey** (volume key / full-screen tap) through **`ModeManager`**; route all speech through **`AudioOutputManager`** (don't speak over radar alerts).
+- **Integration (INT):** swap stub `SceneDescriber` in `ModeManager` for real `SmolVlmSceneDescriber`.
+- **Does not need:** model export or ExecuTorch+QNN compile on host (receives artifacts from Jainil).
+
+#### Handoff checklist (Team B complete when all checked)
+| Item | Owner |
+| --- | --- |
+| `vlm.pte` + tokenizer on branch | Jainil |
+| `export_smolvlm.py` + I/O spec | Jainil |
+| On-device inference works on S25 | Udit |
+| `SmolVlmSceneDescriber` loads model & decodes text | Udit |
+| `TeamBHarnessActivity` speaks description | Udit |
+| Hotkey + TTS + `AudioOutputManager` (M6) | Udit |
+
+- **Independent test path:** Udit runs `TeamBHarnessActivity` with Jainil's assets — needs nothing from Team A until fallback tags path. Acceptance = M6 test.
 
 ### Team C — Familiar Places (owns learned-space mode; milestones M-C0..M-C3)
 Helps users navigate places they revisit (classroom, grocery store, office) by learning the space once and guiding them on return. The personal "map" (embeddings + labels) is stored only on the device.
@@ -263,11 +296,11 @@ Helps users navigate places they revisit (classroom, grocery store, office) by l
 ## Hour-by-hour (2 days)
 ### Saturday — shared foundation, then fork
 - **H1-2 (12:00-2:00):** EVERYONE on the shared foundation — M0 toolchain + app skeleton + frozen interface contracts (`FrameProvider`, `EtModule`, `ModeManager`, `SafetyRadar`/`SceneDescriber` stubs).
-- **H3-5 (2:00-5:00):** FORK. Team A: depth+YOLO `.pte` in-app -> zones -> first beeps (toward M2). Team B: VLM `.pte` producing text in a harness activity. Team C: CLIP/MobileCLIP encoder `.pte` + cosine similarity check (M-C0).
-- **H5-7 (5:00-7:00):** Team A: fusion + spatial audio (M3-M4). Team B: hotkey + TTS flow (M6). Team C: enrollment + local DB (M-C1).
+- **H3-5 (2:00-5:00):** FORK. Team A: depth+YOLO `.pte` in-app -> zones -> first beeps (toward M2). Team B: Jainil pushes VLM `.pte` + spec; Udit validates on S25 and gets harness producing text. Team C: CLIP/MobileCLIP encoder `.pte` + cosine similarity check (M-C0).
+- **H5-7 (5:00-7:00):** Team A: fusion + spatial audio (M3-M4). Team B: Udit hotkey + TTS + `AudioOutputManager` flow (M6); Jainil only if fallback Llama export is needed. Team C: enrollment + local DB (M-C1).
 
 ### Sunday — finish, integrate, demo
-- **8:30-10:30:** Team A M5 polish + blindfold test; Team B finalize describe latency; Team C localization + guidance (M-C2..M-C3). Begin INT (swap stubs for real modules).
+- **8:30-10:30:** Team A M5 polish + blindfold test; Team B (Udit) finalize describe latency + INT wiring; Jainil on standby for model fixes. Team C localization + guidance (M-C2..M-C3). Begin INT (swap stubs for real modules).
 - **10:30-12:30:** Finish INT (ModeManager arbitration), build demo space, rehearse pitch (latency=injury, privacy, offline).
 
 ## Demo script (~5 min)
