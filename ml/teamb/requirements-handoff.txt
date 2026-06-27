@@ -1,0 +1,6 @@
+# Lightweight tooling for tokenizer download and handoff packaging.
+# Full ExecuTorch+QNN compile is a separate host setup — see EXPORT_STRATEGY.md.
+transformers>=4.40
+huggingface_hub>=0.23
+numpy
+pillow
