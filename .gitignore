@@ -21,3 +21,12 @@ __pycache__/
 venv/
 ml/**/artifacts/
 *.pte
+
+# Team B local artifacts (not committed)
+ml/teamb/models/
+ml/teamb/exports/
+ml/teamb/handoff/
+ml/teamb/cache/
+
+# Local scratch (not committed)
+donotcheckin/
