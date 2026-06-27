@@ -40,9 +40,16 @@ class AudioOutputManager(context: Context) {
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.getDefault()
                 tts?.setOnUtteranceProgressListener(progressListener)
+                // Slightly slower than default for intelligibility of scene descriptions.
+                tts?.setSpeechRate(0.95f)
                 ttsReady = true
             }
         }
+    }
+
+    /** Adjust speech rate (1.0 = normal). Useful for a future verbosity / clarity setting. */
+    fun setSpeechRate(rate: Float) {
+        tts?.setSpeechRate(rate)
     }
 
     private val progressListener = object : UtteranceProgressListener() {

@@ -2,8 +2,10 @@ package com.echowalk.teamb
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.View
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.TextView
@@ -14,6 +16,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.echowalk.shared.AudioOutputManager
 import com.echowalk.shared.camera.CameraXFrameProvider
+import com.echowalk.teamb.vlm.FrameQuality
 import com.echowalk.teamb.vlm.SceneDescribers
 import com.echowalk.teamb.vlm.SceneDiagnostics
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +32,9 @@ import kotlin.coroutines.resume
  *   READY); inference runs off the UI thread and SPEAKING ends precisely when TTS finishes.
  * - Describer is chosen by [SceneDescribers.create]: VLM (`vlm.pte`) -> classifier
  *   (`classifier.pte`+`labels.txt`) -> Mock. The active engine shows as [VLM]/[TAGS]/[MOCK].
- * - Either volume key is a hands-free hotkey for Describe (mirrors ModeManager in the full app).
+ * - Either volume key is a hands-free hotkey for Describe (mirrors ModeManager in the full app);
+ *   long-press the button to replay the last description.
+ * - Dark/covered-lens frames are detected and announced instead of describing a black image.
  *
  * Drop a real `vlm.pte` into app/src/main/assets/ to flip from [MOCK] to [VLM] with no code change.
  */
@@ -46,6 +51,7 @@ class TeamBHarnessActivity : AppCompatActivity() {
     private lateinit var audio: AudioOutputManager
     private lateinit var describer: SceneDescriber
     private var state = UiState.READY
+    private var lastDescription: String? = null
 
     private lateinit var previewView: PreviewView
     private lateinit var capturedThumb: ImageView
@@ -68,6 +74,7 @@ class TeamBHarnessActivity : AppCompatActivity() {
         describeButton = findViewById(R.id.describeButton)
         hudText = findViewById(R.id.hudText)
         describeButton.setOnClickListener { onDescribe() }
+        describeButton.setOnLongClickListener { onRepeat(); true } // long-press = repeat last
 
         frames = CameraXFrameProvider(this)
         audio = AudioOutputManager(this).also { it.init() }
@@ -98,18 +105,50 @@ class TeamBHarnessActivity : AppCompatActivity() {
         capturedThumb.setImageBitmap(frame.rgb)
 
         lifecycleScope.launch {
+            // A blind user can't see a covered lens / dark room — say so instead of describing black.
+            if (isFrameTooDark(frame.rgb)) {
+                val hint = "It's too dark to see clearly. Point the camera at the room or uncover the lens."
+                setState(UiState.SPEAKING, detail = hint)
+                speakAndAwait(hint)
+                setState(UiState.READY)
+                return@launch
+            }
+
             setState(UiState.THINKING)
             // Keep inference off the UI thread; the real VLM/classifier pass is CPU/NPU heavy.
             val startNs = System.nanoTime()
             val text = withContext(Dispatchers.Default) { describer.describe(frame) }
             val latencyMs = (System.nanoTime() - startNs) / 1_000_000
 
+            lastDescription = text
             renderHud(latencyMs)
             setState(UiState.SPEAKING, detail = text)
             speakAndAwait(text)
 
             setState(UiState.READY)
         }
+    }
+
+    /** Long-press: replay the last description without re-running inference (easy to miss the speech). */
+    private fun onRepeat() {
+        if (state != UiState.READY) return
+        val last = lastDescription
+        val text = last ?: "Nothing has been described yet. Tap Describe first."
+        lifecycleScope.launch {
+            setState(UiState.SPEAKING, detail = text)
+            speakAndAwait(text)
+            setState(UiState.READY)
+        }
+    }
+
+    /** Downscale + mean-luma check so we don't pay for a full-res scan. */
+    private fun isFrameTooDark(bitmap: Bitmap): Boolean {
+        val s = 32
+        val small = Bitmap.createScaledBitmap(bitmap, s, s, true)
+        val px = IntArray(s * s)
+        small.getPixels(px, 0, s, 0, 0, s, s)
+        if (small !== bitmap) small.recycle()
+        return FrameQuality.isTooDark(px)
     }
 
     /** Demo HUD: engine + last inference latency + top predictions (when the engine exposes them). */
