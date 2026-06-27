@@ -1,0 +1,10 @@
+# Pin exact versions once your ExecuTorch + QNN toolchain is confirmed (M0).
+# These are the typical building blocks; align versions with your QNN SDK / QAIRT release.
+torch
+torchvision
+executorch
+transformers
+numpy
+pillow
+# qai-hub            # Qualcomm AI Hub client (optional, for pre-exported artifacts / profiling)
+# qai-hub-models     # Qualcomm AI Hub model zoo

@@ -1,0 +1,22 @@
+# Android / Gradle
+.gradle/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+.DS_Store
+
+# Model + native artifacts (large; distribute out-of-band)
+android/app/src/main/assets/*.pte
+android/app/src/main/assets/*.bin
+android/app/src/main/jniLibs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+ml/**/artifacts/
+*.pte

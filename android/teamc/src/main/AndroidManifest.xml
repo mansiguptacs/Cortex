@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Voice labels during the enrollment learning walk. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application>
+        <!-- Team C isolation harness; merged into the app. Launch via adb. -->
+        <activity android:name=".TeamCHarnessActivity" android:exported="false" />
+    </application>
+</manifest>
