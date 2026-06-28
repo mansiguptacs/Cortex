@@ -24,20 +24,20 @@ todos:
     content: "[TEAM B — Jainil] Export SmolVLM-500M to QNN HTP .pte (+ Llama-3.2-1B fallback .pte if needed). Prefer AI Hub pre-exports. Deliver vlm.pte + tokenizer + I/O spec on branch. TEST: export script runs; artifacts ready for assets/."
     status: completed
   - id: b1v
-    content: "[TEAM B — Udit] On-device validation on S25 Ultra: push Jainil's .pte to assets/, run qnn_multimodal_runner via adb. TEST: VLM produces text from an image on NPU. BLOCKED: libQnnHtpV79Skel.so must be QAIRT 2.46.0 (host libs are 2.46, skel was 2.47)."
-    status: in_progress
+    content: "[TEAM B — Udit] On-device validation on S25 Ultra: push Jainil's .pte to assets/, run qnn_multimodal_runner via adb. BLOCKED: QnnContextCustomProtocol version mismatch (PTEs=0x2000000, runner=0x5678abcd) causes segfault on any valid image. Text-only path OK; image path crashes at IOManager. Jainil must re-export PTEs from same ExecuTorch commit as runner/AAR."
+    status: blocked
   - id: b2
-    content: "[TEAM B — Udit] SmolVlmSceneDescriber (3-PTE LlmModule path) + describe pipeline. CPU hedge DONE (Places365 ClassifierSceneDescriber). VLM in-app path NOT wired yet. TEST: Describe returns plausible spoken text."
+    content: "[TEAM B — Udit] SmolVlmSceneDescriber (3-PTE LlmModule path) + describe pipeline. CPU hedge DONE (Places365 ClassifierSceneDescriber). LlmModule path fails same root cause as CLI runner. Raw Module per-PTE loading works (methods confirmed: encoder:forward, tokEmb:tok_embedding_*_forward, decoder:prefill_forward+kv_forward). Full manual pipeline pending."
     status: in_progress
   - id: b3
     content: "[TEAM B — Udit] Tap/double-tap + TTS + audio bus via ModeManager in main app (M6). Earcons, ambient auto-describe, temporal voting, confidence narration. Volume key left to system (tap = eyes-free trigger). TEST: tap in a room, hear description offline."
     status: completed
   - id: b4
-    content: "[TEAM B — Udit] Wire executorch-qnn.aar + LlmModuleSceneDescriber (3-PTE decode + ScenePrompt). Scaffold DONE; NPU end-to-end pending 2.46.0 skel + stage_vlm_assets.sh."
-    status: in_progress
+    content: "[TEAM B — Udit] Wire executorch-qnn.aar + LlmModuleSceneDescriber (3-PTE decode + ScenePrompt). Dual-strategy loader: tries LlmModule first, falls back to raw Module per-PTE, then Places365 classifier. SoLoader + fbjni wired. Tokenizer assets bundled. NPU end-to-end pending version-matched PTEs from Jainil."
+    status: completed
   - id: b5
-    content: "[TEAM B — Udit] Prompt tuning + VLM output post-process for blind navigation (layout, objects, path). Optional: fuse Team A YOLO labels into VLM prompt for spatial grounding."
-    status: pending
+    content: "[TEAM B — Udit] Prompt tuning + VLM output post-process for blind navigation (layout, objects, path). Optional: fuse Team A YOLO labels into VLM prompt for spatial grounding. Requires VLM to produce text first (blocked on b1v)."
+    status: blocked
   - id: c0
     content: "[TEAM C] Embedding model on NPU (CLIP/MobileCLIP image encoder) -> vector per frame (M-C0). TEST: same-spot photos high cosine sim, different-spot low."
     status: pending
@@ -265,13 +265,18 @@ Rules baked into the contract:
 | --- | --- | --- |
 | 3× `.pte` + tokenizer + I/O spec (`udit-full-handoff`) | Jainil | ✅ Done |
 | `qnn_multimodal_runner` + QNN jniLibs + `executorch-qnn.aar` | Jainil | ✅ Done |
-| **`libQnnHtpV79Skel.so` QAIRT 2.46.0** (version match fix) | Jainil | ⏳ **BLOCKER** |
-| adb NPU inference → real text (`tools/run_smolvlm_device.sh`) | Udit | ⏳ Awaiting skel |
+| `libQnnHtpV79Skel.so` QAIRT 2.46.0 (`qnn-runtime-2.46-v79`) | Jainil | ✅ Done |
+| **Re-export PTEs from same ExecuTorch commit as AAR/runner** | Jainil | ❌ **BLOCKER** — see root cause below |
+| adb NPU inference → real text (`tools/run_smolvlm_device.sh`) | Udit | ❌ Blocked by PTE/runner mismatch |
 | `ClassifierSceneDescriber` CPU hedge (Places365) on device | Udit | ✅ Done (~68 ms) |
 | `TeamBHarnessActivity` full UX (tap, ambient, HUD, earcons) | Udit | ✅ Done |
 | `MainActivity` + `ModeManager` integration (Team B in real app) | Udit | ✅ Done |
-| `LlmModule` in-app SmolVLM describer (3-PTE decode) | Udit | ✅ Scaffolded (await skel + on-device test) |
-| Prompt tuning for blind-navigation descriptions | Udit | ❌ Not started |
+| `LlmModuleSceneDescriber` dual-strategy (LlmModule + raw Module) | Udit | ✅ Done (awaiting version-matched PTEs) |
+| Raw Module diagnostics — all 3 PTEs verified loadable | Udit | ✅ Done |
+| Prompt tuning for blind-navigation descriptions | Udit | ❌ Blocked (need VLM text output first) |
+
+#### ROOT CAUSE — PTE / runtime version mismatch
+The PTEs and the runner binary/AAR were built against **different ExecuTorch commits**. Every PTE load logs `QnnContextCustomProtocol expected magic number: 0x5678abcd but get: 0x2000000`. The runner falls back to a different deserialization path which loads QNN graphs but **silently corrupts I/O metadata** needed by `IOManager`. Result: text-only path works, any valid JPEG segfaults at `creating io_memory`. Same crash affects both the CLI `qnn_multimodal_runner` and the in-app `LlmModule.load()`. Fix: Jainil re-exports PTEs from the exact commit used to build the AAR/runner. See `ml/teamb/RUNTIME_NEEDED.md` for full details.
 
 #### Team B progress log (Udit + Jainil, branch `team-b/scene-description`)
 
@@ -282,22 +287,25 @@ Rules baked into the contract:
 - **Ambient mode:** Continuous classify with EMA + stability + change-only announcements; thresholds tuned for Places365 (~0.14 announce conf).
 - **Main app shell:** `MainActivity` drives `ModeManager` with full Team B flow; `NoopSafetyRadar` / `NoopPlaceNavigator` until int1 complete.
 - **SmolVLM Phase-1 validation prep:** `tools/run_smolvlm_device.sh` updated for `qnn_multimodal_runner`; validated on S25 up to QNN device init (`-decoder_model_version smolvlm` confirmed).
+- **VLM in-app scaffolding (b4):** `LlmModuleSceneDescriber` with dual-strategy (LlmModule → raw Module → classifier fallback). `executorch-qnn.aar`, `EchoWalkApplication` (SoLoader), `fbjni`, `VlmAssets`, `ScenePrompt`, tokenizer assets — all wired and compiling.
+- **Root cause diagnosis:** Identified `QnnContextCustomProtocol` magic number mismatch (`0x5678abcd` vs `0x2000000`) as root cause. Proved text-only path works but any valid JPEG segfaults at `IOManager`. Both CLI runner and in-app `LlmModule.load()` fail identically.
+- **Raw Module diagnostics:** All 3 PTEs load individually via `Module.load()` — confirmed methods: encoder(`forward`), tokEmb(`tok_embedding_prefill_forward`, `tok_embedding_kv_forward`), decoder(`prefill_forward`, `kv_forward` + 64 KV quant attrs + metadata getters). The problem is strictly in the C++ `MultimodalRunner` IOManager, not the PTE files themselves.
 
-**Blocked (one file):**
-- NPU init fails: host libs **2.46.0**, skel **2.47.0** → need `libQnnHtpV79Skel.so` from QAIRT 2.46.0. See `ml/teamb/RUNTIME_NEEDED.md`.
+**Blocked (Jainil action required):**
+- **PTE / runner version mismatch:** PTEs and `executorch-qnn.aar` were compiled from different ExecuTorch commits. The `QnnContextCustomProtocol` format differs, causing `IOManager` to segfault when setting up image I/O buffers. Jainil needs to re-export PTEs from the **same ExecuTorch commit** used to build the AAR and runner. See `ml/teamb/RUNTIME_NEEDED.md` for full details and reproduction steps.
 
-**While waiting — high-value Udit tasks (no Jainil dependency):**
-1. ~~**Scaffold in-app VLM path (b4):**~~ ✅ Done — `LlmModuleSceneDescriber`, `executorch-qnn.aar`, `tools/stage_vlm_assets.sh`, `ScenePrompt.kt`.
-2. **Accessibility polish:** TalkBack `contentDescription`s, announce state changes ("Thinking…", "Speaking…"), optional hide HUD for demo mode.
-3. **Describe UX in main app:** Show captured-frame thumbnail (harness has it; main app doesn't yet) so sighted helpers can debug.
-4. **Prompt module:** Centralize VLM prompt strings (`ScenePrompt.kt`) so Jainil/Udit can iterate without touching describer logic.
-5. **Team A hook:** When Team A is ready, swap `NoopSafetyRadar` → `SafetyRadarController` in `MainActivity` (one line); verify `ModeManager` pauses radar during describe.
-6. **Optional richer CPU fallback:** Add MobileNet object-tag classifier alongside Places365 for tap-describe ("I see a chair and a table in a kitchen") — still not spatial, but better than category-only.
+**Remaining Udit tasks (no Jainil dependency):**
+1. **Accessibility polish:** TalkBack `contentDescription`s, announce state changes ("Thinking…", "Speaking…"), optional hide HUD for demo mode.
+2. **Describe UX in main app:** Show captured-frame thumbnail (harness has it; main app doesn't yet) so sighted helpers can debug.
+3. **Team A hook:** When Team A is ready, swap `NoopSafetyRadar` → `SafetyRadarController` in `MainActivity` (one line); verify `ModeManager` pauses radar during describe.
+4. **Optional richer CPU fallback:** Add MobileNet object-tag classifier alongside Places365 for tap-describe ("I see a chair and a table in a kitchen") — still not spatial, but better than category-only.
+5. **Manual VLM pipeline (stretch):** Use raw `Module.execute()` per-PTE to bypass the broken `MultimodalRunner` — implement encoder→tok_embedding→decoder loop in Kotlin. Complex (tokenizer + KV cache management) but possible as a last resort.
 
-**After skel lands (fast path):**
-1. Run `tools/run_smolvlm_device.sh` → confirm NPU text output.
-2. Drop matching skel into handoff; stage assets in APK.
-3. Flip `LlmModuleSceneDescriber` on in factory → manual Describe uses SmolVLM; ambient stays on fast classifier.
+**After Jainil re-exports version-matched PTEs (fast path):**
+1. Run `tools/run_smolvlm_device.sh` → confirm NPU text output (no more `QnnContextCustomProtocol` mismatch).
+2. Stage assets in APK via `tools/stage_vlm_assets.sh`.
+3. `LlmModuleSceneDescriber` will auto-select LlmModule path → manual Describe uses SmolVLM; ambient stays on fast classifier.
+4. Prompt tune for blind-navigation descriptions (b5).
 
 - **Independent test path:** Udit runs `TeamBHarnessActivity` or main **EchoWalk** app with classifier assets — needs nothing from Team A until YOLO+Llama fallback or spatial fusion. Acceptance = M6 test with SmolVLM on NPU.
 
