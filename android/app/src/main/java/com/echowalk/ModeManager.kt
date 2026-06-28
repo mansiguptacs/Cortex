@@ -229,32 +229,61 @@ class ModeManager(
     /** Build a spoken description from the latest YOLO detections — works with zero extra models. */
     private fun buildYoloDescription(): String {
         val state = latestRadarState
-        if (state == null || state.hazards.isEmpty()) return "I don't see any recognisable objects right now."
-        // Group by class, deduplicate, sort by closest (highest distanceM = closest in relative depth).
-        val grouped = state.hazards
+        if (state == null || state.hazards.isEmpty())
+            return "I don't see any recognisable objects right now. Try pointing the camera at the room."
+
+        // Deduplicate: one entry per class, keep the one with highest depth (= closest).
+        val unique = state.hazards
             .groupBy { it.cls }
             .mapValues { (_, v) -> v.maxByOrNull { it.distanceM }!! }
             .values
-            .sortedByDescending { it.distanceM }
-            .take(4) // cap at 4 objects to keep the phrase short
-        val parts = grouped.map { h ->
-            val dir = when {
-                h.azimuthDeg < -13f -> "on your left"
-                h.azimuthDeg >  13f -> "on your right"
-                else -> "ahead"
+            .sortedByDescending { it.distanceM } // closest first
+            .take(9) // describe up to 9 objects for a complete scene picture
+
+        // Infer room type from visible objects.
+        val roomType = RoomTypeClassifier.classify(unique.map { it.cls }.toSet())
+        val intro = "You appear to be in a $roomType. "
+
+        // Split into spatial zones by azimuth.
+        val left   = unique.filter { it.azimuthDeg < -18f }
+        val center = unique.filter { it.azimuthDeg in -18f..18f }
+        val right  = unique.filter { it.azimuthDeg >  18f }
+
+        // Near = top half by depth within the set; far = bottom half.
+        val depthMid = unique.map { it.distanceM }.median()
+
+        fun describeZone(objects: List<com.echowalk.teama.Hazard>): String? {
+            if (objects.isEmpty()) return null
+            return objects.joinToString(" and ") { h ->
+                val proximity = if (h.distanceM >= depthMid) "nearby" else "further away"
+                "${friendlyLabel(h.cls)} ($proximity)"
             }
-            "${friendlyLabel(h.cls)} $dir"
         }
-        return when (parts.size) {
-            1 -> "I see a ${parts[0]}."
-            2 -> "I see a ${parts[0]}, and a ${parts[1]}."
-            else -> "I see a ${parts.dropLast(1).joinToString(", a ")}, and a ${parts.last()}."
-        }
+
+        val parts = mutableListOf<String>()
+        describeZone(left)?.let   { parts.add("On your left: $it.") }
+        describeZone(center)?.let { parts.add("Ahead: $it.") }
+        describeZone(right)?.let  { parts.add("On your right: $it.") }
+
+        return if (parts.isEmpty()) "I don't see any recognisable objects right now."
+               else intro + parts.joinToString(" ")
+    }
+
+    private fun List<Float>.median(): Float {
+        if (isEmpty()) return 0f
+        val s = sorted()
+        return if (size % 2 == 0) (s[size / 2 - 1] + s[size / 2]) / 2f else s[size / 2]
     }
 
     private fun friendlyLabel(cls: String) = mapOf(
-        "person" to "person", "dining table" to "table", "tv" to "screen",
+        "person" to "person", "dining table" to "table", "tv" to "TV screen",
         "cell phone" to "phone", "backpack" to "bag", "refrigerator" to "fridge",
+        "couch" to "sofa", "potted plant" to "plant", "wine glass" to "glass",
+        "keyboard" to "keyboard", "mouse" to "mouse", "laptop" to "laptop",
+        "remote" to "remote", "book" to "book", "clock" to "clock",
+        "hair drier" to "hair dryer", "toothbrush" to "toothbrush",
+        "toilet" to "toilet", "sink" to "sink", "bed" to "bed",
+        "chair" to "chair", "bottle" to "bottle", "cup" to "cup",
     ).getOrDefault(cls, cls)
 
     /** Replay the last description (long-press / double-tap) without re-running inference. */
