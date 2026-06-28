@@ -77,13 +77,39 @@ class ModeManager(
 
     /** Room recognizer — active only when spatialMemory is provided. */
     private val roomRecognizer: RoomRecognizer? = spatialMemory?.let {
-        RoomRecognizer(it) { recalls ->
-            // "Familiar area" callback — called from whatever thread process() ran on.
+        RoomRecognizer(it) { roomType, isReturn, recalls ->
+            // Fires from background thread — launch on our scope.
             scope.launch {
                 if (audio.isSpeaking()) return@launch
-                audio.speak("Familiar area.", flush = false)
+
+                // Build the spoken cue:
+                //  First visit:  "You appear to be in a kitchen."
+                //  Return visit: "You're back in the kitchen. Fridge is ahead-right."
+                val intro = if (isReturn) "You're back in the $roomType."
+                            else          "You appear to be in a $roomType."
+
+                val layout = buildRoomLayout(recalls, maxItems = 2)
+                val phrase = if (layout.isNotEmpty()) "$intro $layout" else intro
+                audio.speak(phrase, flush = false)
             }
         }
+    }
+
+    /** Build a brief spoken layout hint: "Fridge is ahead-right, bottle is on your left." */
+    private fun buildRoomLayout(bearings: Map<String, Float>, maxItems: Int): String {
+        if (bearings.isEmpty()) return ""
+        val parts = bearings.entries
+            .sortedBy { (_, az) -> Math.abs(az) } // centre objects first (most useful)
+            .take(maxItems)
+            .map { (cls, az) ->
+                val dir = when {
+                    az < -25f -> "on your left"
+                    az >  25f -> "on your right"
+                    else      -> "ahead"
+                }
+                "${cls.replaceFirstChar { it.uppercase() }} is $dir"
+            }
+        return parts.joinToString(", ") + "."
     }
 
     @Volatile

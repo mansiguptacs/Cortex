@@ -26,6 +26,8 @@ class SpatialMemory(context: Context) {
         val id: String,
         /** Canonical signature — the object classes that define this place. */
         val signature: Set<String>,
+        /** Inferred room type label — e.g. "kitchen", "bathroom". Stored on first visit. */
+        var roomType: String = "area",
         /** Last known azimuth (degrees, camera-relative) for each object class seen here. */
         val objectBearings: MutableMap<String, Float> = mutableMapOf(),
         var lastSeenMs: Long = System.currentTimeMillis(),
@@ -49,21 +51,20 @@ class SpatialMemory(context: Context) {
      *         items (not distinctive enough).
      */
     @Synchronized
-    fun record(objects: Set<String>, bearings: Map<String, Float>): PlaceMemory? {
+    fun record(objects: Set<String>, bearings: Map<String, Float>, roomType: String = "area"): PlaceMemory? {
         if (objects.size < MIN_SIG_SIZE) return null
         val existing = bestMatch(objects)
         return if (existing != null) {
-            // Update existing place.
             existing.objectBearings.putAll(bearings)
             existing.lastSeenMs = System.currentTimeMillis()
             existing.visitCount++
             save()
             existing
         } else {
-            // New place.
             val place = PlaceMemory(
                 id = UUID.randomUUID().toString().take(8),
                 signature = objects,
+                roomType = roomType,
                 objectBearings = bearings.toMutableMap(),
                 lastSeenMs = System.currentTimeMillis(),
             )
@@ -142,6 +143,7 @@ class SpatialMemory(context: Context) {
                     PlaceMemory(
                         id = o.optString("id", UUID.randomUUID().toString().take(8)),
                         signature = sig,
+                        roomType = o.optString("type", "area"),
                         objectBearings = bearings,
                         lastSeenMs = o.optLong("ts", System.currentTimeMillis()),
                         visitCount = o.optInt("visits", 1),
@@ -160,6 +162,7 @@ class SpatialMemory(context: Context) {
                 o.put("id", p.id)
                 val sigArr = JSONArray(); p.signature.forEach { sigArr.put(it) }
                 o.put("sig", sigArr)
+                o.put("type", p.roomType)
                 val bearingsObj = JSONObject(); p.objectBearings.forEach { (k, v) -> bearingsObj.put(k, v.toDouble()) }
                 o.put("bearings", bearingsObj)
                 o.put("ts", p.lastSeenMs)
