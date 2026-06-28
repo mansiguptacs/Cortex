@@ -36,7 +36,6 @@ class FindModeController(
     private val warnedObstacles = mutableSetOf<String>() // obstacles already warned this session
 
     fun process(state: RadarState) {
-        if (audio.isSpeaking()) return
         val now = System.currentTimeMillis()
 
         val target = state.hazards
@@ -45,10 +44,28 @@ class FindModeController(
 
         if (target != null) ObjectMemory.update(targetClass, target.azimuthDeg)
 
+        // CRITICAL: check SCAN→NAVIGATE transition BEFORE the isSpeaking() gate.
+        // When the target appears, interrupt any ongoing scan announcement and switch immediately —
+        // otherwise the phase can never advance while TTS is mid-sentence.
+        if (phase == Phase.SCAN && target != null) {
+            phase = Phase.NAVIGATE
+            lastSeenMs = now
+            lastElevationDeg = target.elevationDeg
+            // flush=true interrupts the current scan announcement
+            audio.speak(
+                "Found it — ${friendlyName(targetClass)} ${directionPhrase(target.azimuthDeg)}. I'll guide you.",
+                flush = true,
+            )
+            lastGuidanceMs = now
+            return
+        }
+
+        // Gate all other voice output on isSpeaking() to avoid overlapping speech.
+        if (audio.isSpeaking()) return
+
         return when (phase) {
             Phase.SCAN     -> processScan(state, target, now)
             Phase.NAVIGATE -> {
-                // Check path obstacles before navigation guidance — urgent obstacles first.
                 checkPathObstacles(state, target, now)
                 processNavigate(target, now)
             }
@@ -93,24 +110,25 @@ class FindModeController(
         audio.speak("Watch out — ${friendlyName(obstacle.cls)} $dir", flush = false)
     }
 
-    // During SCAN: announce every new visible object; switch to NAVIGATE when target appears.
+    // During SCAN: announce a few visible objects to orient the user; switch to NAVIGATE when target appears.
+    // NOTE: the SCAN→NAVIGATE transition itself is handled in process() before the isSpeaking() gate.
     private fun processScan(state: RadarState, target: com.echowalk.teama.Hazard?, now: Long) {
-        if (target != null) {
-            phase = Phase.NAVIGATE
-            lastSeenMs = now
-            audio.speak("Found it — ${friendlyName(targetClass)} ${directionPhrase(target.azimuthDeg)}. I'll guide you.", flush = false)
-            lastGuidanceMs = now
-            return
-        }
         if (now - lastGuidanceMs < SCAN_ANNOUNCE_RATE_MS) return
-        val newClass = state.hazards
-            .filterNot { it.cls == targetClass || it.cls in announcedClasses }
-            .maxByOrNull { it.distanceM }
-        if (newClass != null) {
-            announcedClasses.add(newClass.cls)
-            audio.speak("I see a ${friendlyName(newClass.cls)} ${directionPhrase(newClass.azimuthDeg)}", flush = false)
-            lastGuidanceMs = now
-        } else if (now - lastGuidanceMs > SCAN_NUDGE_MS) {
+
+        // Cap at MAX_SCAN_OBJECTS so we don't build a 15+ second TTS chain that blocks detection.
+        if (announcedClasses.size < MAX_SCAN_OBJECTS) {
+            val newClass = state.hazards
+                .filterNot { it.cls == targetClass || it.cls in announcedClasses }
+                .maxByOrNull { it.distanceM }
+            if (newClass != null) {
+                announcedClasses.add(newClass.cls)
+                audio.speak("I see a ${friendlyName(newClass.cls)} ${directionPhrase(newClass.azimuthDeg)}", flush = false)
+                lastGuidanceMs = now
+                return
+            }
+        }
+        // Cap reached or no new objects — nudge user to keep rotating.
+        if (now - lastGuidanceMs > SCAN_NUDGE_MS) {
             audio.speak("Keep turning slowly", flush = false)
             lastGuidanceMs = now
         }
@@ -304,6 +322,7 @@ class FindModeController(
         private const val AUTO_EXIT_MS            = 12_000L // longer grace before giving up
         private const val SCAN_ANNOUNCE_RATE_MS   = 2_000L
         private const val SCAN_NUDGE_MS           = 5_000L
+        private const val MAX_SCAN_OBJECTS        = 2      // cap orient-announcements to avoid long TTS chains
         private const val TREND_WINDOW            = 4
         private const val TREND_DELTA             = 0.4f
 
