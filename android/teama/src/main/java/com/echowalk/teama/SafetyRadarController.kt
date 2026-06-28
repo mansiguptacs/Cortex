@@ -8,6 +8,7 @@ import com.echowalk.shared.ImagePreprocessor
 import com.echowalk.teama.audio.SpatialAudioEngine
 import com.echowalk.teama.fusion.DepthYoloFusion
 import java.nio.ByteBuffer
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,8 +21,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - [inferExec]    (1 thread, MAX_PRIORITY): owns all NPU calls sequentially — the Hexagon NPU
  *                   is a single hardware unit; two simultaneous submissions just cause contention.
  *  - [preprocessExec] (2 threads, NORM_PRIORITY): runs depth and YOLO image resizes in parallel
- *                   on CPU while waiting for the NPU to finish the previous frame. Saves ~15-20ms
- *                   per cycle (~15% FPS gain on S25 Ultra).
+ *                   on CPU while the NPU is busy with the previous frame.
+ *
+ * Optimisations:
+ *  1. Parallel CPU preprocessing — depth 518×518 and YOLO 640×640 resize run simultaneously.
+ *  2. Pre-allocated ByteBuffers — [depthBuf] / [yoloBuf] are allocated once and reused every
+ *     frame, eliminating ~10 MB of direct-memory allocation per cycle.
+ *  3. Depth frame stride — depth NPU runs every [DEPTH_STRIDE] frames; the cached depth map is
+ *     reused for the alternate frame. Depth changes far more slowly than object detections,
+ *     so this halves depth NPU load while YOLO still runs every frame.
  *
  * Back-pressure: [inFlight] gate drops incoming frames while the pipeline is busy. CameraX's
  * STRATEGY_KEEP_ONLY_LATEST ensures we always pick up the freshest frame next.
@@ -51,6 +59,16 @@ class SafetyRadarController(
         private set
     @Volatile var lastDetections: List<DepthYoloFusion.Detection> = emptyList()
         private set
+
+    // Pre-allocated input buffers — reused every frame to avoid per-cycle allocateDirect().
+    // Safe because inFlight guarantees only one pipeline cycle runs at a time.
+    private val depthBuf = ByteBuffer.allocateDirect(DEPTH_HW * DEPTH_HW * 3 * 4)
+        .order(java.nio.ByteOrder.nativeOrder())
+    private val yoloBuf  = ByteBuffer.allocateDirect(YOLO_HW  * YOLO_HW  * 3 * 4)
+        .order(java.nio.ByteOrder.nativeOrder())
+
+    /** Counts processed frames; depth NPU runs every [DEPTH_STRIDE] frames to halve its load. */
+    private var frameCount = 0
 
     private var inferExec = newInferExecutor()
     // 2-thread pool for parallel CPU preprocessing (depth resize + YOLO resize simultaneously).
@@ -91,25 +109,34 @@ class SafetyRadarController(
     private fun onFrame(frame: Frame) {
         if (!inFlight.compareAndSet(false, true)) return // drop while pipeline busy
 
-        // Submit both CPU preprocessing tasks in parallel immediately —
-        // they run while the previous frame's NPU inference may still be in-flight.
-        val depthInputFuture: Future<ByteBuffer?> = preprocessExec.submit<ByteBuffer?> {
-            depthModule?.let { ImagePreprocessor.toFp32Nhwc(frame.rgb, DEPTH_HW, DEPTH_HW) }
+        // Depth stride: run depth NPU every DEPTH_STRIDE frames to cut depth load in half.
+        // The cached lastDepth is used for the alternate frames — depth changes slowly.
+        val runDepth = (frameCount++ % DEPTH_STRIDE == 0) && depthModule != null
+
+        // Submit both CPU preprocessing tasks in parallel — they resize on CPU while the
+        // NPU is still finishing the previous cycle. Pre-allocated buffers avoid allocation.
+        val depthInputFuture: Future<ByteBuffer?> = if (runDepth) {
+            preprocessExec.submit<ByteBuffer?> {
+                ImagePreprocessor.toFp32Nhwc(frame.rgb, DEPTH_HW, DEPTH_HW, depthBuf)
+            }
+        } else {
+            java.util.concurrent.CompletableFuture.completedFuture(null)
         }
         val yoloInputFuture: Future<ByteBuffer?> = preprocessExec.submit<ByteBuffer?> {
-            yoloModule?.let { ImagePreprocessor.toFp32Nhwc(frame.rgb, YOLO_HW, YOLO_HW) }
+            yoloModule?.let { ImagePreprocessor.toFp32Nhwc(frame.rgb, YOLO_HW, YOLO_HW, yoloBuf) }
         }
 
         inferExec.execute {
             try {
                 val t0 = System.nanoTime()
 
-                // Collect preprocessed tensors (futures are already done or nearly done by now).
                 val depthInput: ByteBuffer? = depthInputFuture.get()
                 val yoloInput: ByteBuffer?  = yoloInputFuture.get()
 
                 // NPU inferences — sequential (Hexagon NPU is a single hardware unit).
-                val depthRaw: FloatArray? = depthInput?.let { runDepthNpu(it) }
+                // For depth-skipped frames, fall back to the cached lastDepth.
+                val depthRaw: FloatArray? = if (depthInput != null) runDepthNpu(depthInput)
+                                            else lastDepth
                 val detections: List<DepthYoloFusion.Detection> =
                     yoloInput?.let { runYoloNpu(it) } ?: emptyList()
 
@@ -128,7 +155,7 @@ class SafetyRadarController(
                         tsMs = frame.tsMs,
                     )
                 }
-                lastDepth = depthRaw
+                if (depthInput != null) lastDepth = depthRaw
                 lastDetections = detections
                 lastInferenceMs = (System.nanoTime() - t0) / 1_000_000
                 audio.render(state)
@@ -179,5 +206,7 @@ class SafetyRadarController(
         private const val DEPTH_HW = 518
         private const val YOLO_HW = 640
         private const val MIN_SCORE = 0.35f
+        /** Run depth NPU every N frames; reuse cached depth map on the others. */
+        private const val DEPTH_STRIDE = 2
     }
 }
