@@ -11,6 +11,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.ImageView
+import android.widget.Switch
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -20,11 +21,16 @@ import androidx.lifecycle.lifecycleScope
 import com.echowalk.shared.AudioOutputManager
 import com.echowalk.shared.Frame
 import com.echowalk.shared.camera.CameraXFrameProvider
+import com.echowalk.teamb.narration.SceneNarration
+import com.echowalk.teamb.narration.SceneStabilizer
+import com.echowalk.teamb.vlm.AmbientScene
 import com.echowalk.teamb.vlm.FrameQuality
 import com.echowalk.teamb.vlm.SceneDescribers
 import com.echowalk.teamb.vlm.SceneDiagnostics
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -64,7 +70,11 @@ class TeamBHarnessActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var describeButton: Button
     private lateinit var hudText: TextView
+    private lateinit var ambientSwitch: Switch
     private lateinit var gestures: GestureDetector
+
+    private val stabilizer = SceneStabilizer()
+    private var ambientJob: Job? = null
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -82,6 +92,7 @@ class TeamBHarnessActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         describeButton = findViewById(R.id.describeButton)
         hudText = findViewById(R.id.hudText)
+        ambientSwitch = findViewById(R.id.ambientSwitch)
         describeButton.setOnClickListener { onDescribe() }
         describeButton.setOnLongClickListener { onRepeat(); true } // long-press = repeat last
 
@@ -99,6 +110,14 @@ class TeamBHarnessActivity : AppCompatActivity() {
         engineLabel = SceneDescribers.engineLabel(describer)
         // Warm the model so the first real describe isn't slow (no-op for Mock).
         lifecycleScope.launch { describer.warmUp() }
+
+        // Ambient (auto) mode is only offered when the engine can rank scenes cheaply.
+        if (describer is AmbientScene) {
+            ambientSwitch.setOnCheckedChangeListener { _, on -> if (on) startAmbient() else stopAmbient() }
+        } else {
+            ambientSwitch.isEnabled = false
+            ambientSwitch.text = "Auto-describe (needs scene model)"
+        }
 
         if (hasCameraPermission()) startCamera() else requestCamera.launch(Manifest.permission.CAMERA)
     }
@@ -146,6 +165,9 @@ class TeamBHarnessActivity : AppCompatActivity() {
 
             lastDescription = text
             renderHud(latencyMs)
+            // Tell ambient mode what we just said so it doesn't immediately echo the same scene.
+            (describer as? SceneDiagnostics)?.lastTopK()?.firstOrNull()
+                ?.let { stabilizer.noteAnnounced(it.label, System.currentTimeMillis()) }
             audio.cueDone()
             setState(UiState.SPEAKING, detail = text)
             speakAndAwait(text)
@@ -181,6 +203,60 @@ class TeamBHarnessActivity : AppCompatActivity() {
             speakAndAwait(last)
             setState(UiState.READY)
         }
+    }
+
+    // --- Ambient (auto) mode: classify continuously, but speak only on a confident, stable change. ---
+
+    private fun startAmbient() {
+        val ambient = describer as? AmbientScene ?: return
+        stabilizer.reset()
+        ambientJob?.cancel()
+        ambientJob = lifecycleScope.launch {
+            while (isActive) {
+                // Defer entirely to a manual describe / any active speech — never talk over it.
+                if (state == UiState.READY && !audio.isSpeaking()) {
+                    val frame = frames.latest()
+                    // Skip dark or motion-blurred frames; classifying them just produces noise.
+                    if (frame != null && !isFrameTooDark(frame.rgb) && !isFrameBlurry(frame.rgb)) {
+                        val startNs = System.nanoTime()
+                        val ranked = ambient.rankScenes(frame)
+                        renderHud((System.nanoTime() - startNs) / 1_000_000)
+                        val top = ranked.firstOrNull()
+                        val decision = stabilizer.observe(
+                            top?.label, top?.prob ?: 0f, System.currentTimeMillis(),
+                        )
+                        if (decision is SceneStabilizer.Decision.Announce) announceAmbient(decision.term)
+                    }
+                }
+                delay(AMBIENT_PERIOD_MS)
+            }
+        }
+    }
+
+    private fun stopAmbient() {
+        ambientJob?.cancel()
+        ambientJob = null
+        stabilizer.reset()
+    }
+
+    /** Speak a brief, change-only ambient cue without seizing the full describe state machine. */
+    private fun announceAmbient(term: String) {
+        val text = SceneNarration.brief(term)
+        if (text.isEmpty()) return
+        lastDescription = text
+        statusText.text = "$text  (auto)"
+        audio.haptic(15) // subtle nudge that something was said
+        audio.speak(text) // isSpeaking() keeps the loop from re-entering until this finishes
+    }
+
+    /** Downscale + Laplacian-variance focus check; cheap enough to run every ambient cycle. */
+    private fun isFrameBlurry(bitmap: Bitmap): Boolean {
+        val s = 64
+        val small = Bitmap.createScaledBitmap(bitmap, s, s, true)
+        val px = IntArray(s * s)
+        small.getPixels(px, 0, s, 0, 0, s, s)
+        if (small !== bitmap) small.recycle()
+        return FrameQuality.isBlurry(px, s, s)
     }
 
     /** Downscale + mean-luma check so we don't pay for a full-res scan. */
@@ -247,14 +323,28 @@ class TeamBHarnessActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
+    override fun onPause() {
+        stopAmbient() // don't classify in the background; switch state is the source of truth
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::ambientSwitch.isInitialized && ambientSwitch.isChecked && describer is AmbientScene) {
+            startAmbient()
+        }
+    }
+
     override fun onDestroy() {
+        stopAmbient()
         if (::frames.isInitialized) frames.shutdown()
         if (::audio.isInitialized) audio.shutdown()
         super.onDestroy()
     }
 
     private companion object {
-        const val BURST_COUNT = 4      // frames sampled per describe for temporal voting
-        const val BURST_GAP_MS = 70L   // spacing between samples (~210ms total window)
+        const val BURST_COUNT = 4        // frames sampled per describe for temporal voting
+        const val BURST_GAP_MS = 70L     // spacing between samples (~210ms total window)
+        const val AMBIENT_PERIOD_MS = 700L // ambient classify cadence (~1.4 Hz)
     }
 }

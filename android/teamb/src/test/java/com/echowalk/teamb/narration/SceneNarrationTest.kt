@@ -79,6 +79,12 @@ class SceneNarrationTest {
         )
     }
 
+    @Test fun briefIsJustThePlace() {
+        assertEquals("Kitchen.", SceneNarration.brief("kitchen"))
+        assertEquals("Meeting room.", SceneNarration.brief("meeting room"))
+        assertEquals("", SceneNarration.brief("  "))
+    }
+
     @Test fun rankedVeryLowGivesUp() {
         assertEquals(
             "I can't quite tell what kind of space this is.",

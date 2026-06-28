@@ -69,6 +69,18 @@ object SceneNarration {
         return "$article $label"
     }
 
+    /**
+     * Ultra-brief phrasing for ambient mode: just the place, e.g. "Kitchen." We deliberately keep
+     * auto-announcements to a single word/phrase so we inform without overwhelming; the full
+     * confidence-aware sentence is reserved for a deliberate tap.
+     */
+    fun brief(term: String): String {
+        val t = term.trim()
+        if (t.isEmpty()) return ""
+        val capped = t.replaceFirstChar { it.uppercase() }
+        return if (capped.last() in ".!?") capped else "$capped."
+    }
+
     /** Normalize raw model text into something clean to speak. */
     fun clean(raw: String): String =
         raw.trim()

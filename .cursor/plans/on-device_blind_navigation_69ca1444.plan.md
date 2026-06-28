@@ -10,16 +10,16 @@ todos:
     status: pending
   - id: a1
     content: "[TEAM A] Export depth + YOLO nano to QNN .pte and validate on device. TEST: both run on NPU via adb with sane outputs."
-    status: pending
+    status: completed
   - id: a2
     content: "[TEAM A] SafetyRadarController: frames -> depth -> L/C/R zone distances; live heatmap overlay (M1-M3). TEST: heatmap >=10fps; nearest-zone identified correctly."
-    status: pending
+    status: completed
   - id: a3
     content: "[TEAM A] Fusion + classification: mask depth by YOLO boxes -> per-object distance/class; wall vs hazard vs drop-off (M4). TEST: overlay 'chair 1.4m'; wall != alarm."
-    status: pending
+    status: completed
   - id: a4
     content: "[TEAM A] SpatialAudioEngine + haptics: distance->pitch/cadence, azimuth->pan, hazard/hum/drop-off timbres, <2m throttle (M5). TEST: blindfold obstacle course."
-    status: pending
+    status: completed
   - id: b1
     content: "[TEAM B — Jainil] Export SmolVLM-500M to QNN HTP .pte (+ Llama-3.2-1B fallback .pte if needed). Prefer AI Hub pre-exports. Deliver vlm.pte + tokenizer + I/O spec on branch. TEST: export script runs; artifacts ready for assets/."
     status: pending

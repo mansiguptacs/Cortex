@@ -28,7 +28,7 @@ class ClassifierSceneDescriber private constructor(
     private val fallback: SceneDescriber,
     /** scene classifier (Places365) -> "You appear to be in ..."; else object -> "I see ...". */
     private val sceneMode: Boolean,
-) : SceneDescriber, SceneDiagnostics {
+) : SceneDescriber, SceneDiagnostics, AmbientScene {
 
     @Volatile
     private var lastTopK: List<LabelScore> = emptyList()
@@ -62,6 +62,17 @@ class ClassifierSceneDescriber private constructor(
             Log.w(TAG, "Warm-up failed (non-fatal)", t)
         }
         Unit
+    }
+
+    /** Ambient mode: rank scene terms for one frame without speaking. Scene classifier only. */
+    override suspend fun rankScenes(frame: Frame): List<LabelScore> = withContext(Dispatchers.Default) {
+        if (!sceneMode) return@withContext emptyList()
+        val logits = forwardLogits(frame.rgb) ?: return@withContext emptyList()
+        val merged = Classification.mergedTopTerms(
+            logits, labels, SceneVocabulary::friendly, consider = CONSIDER, out = TOP_K,
+        )
+        lastTopK = merged // keep the HUD live during ambient mode too
+        merged
     }
 
     private fun forwardLogits(bitmap: Bitmap): FloatArray? {
