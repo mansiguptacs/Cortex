@@ -102,7 +102,15 @@ class FindModeController(
     // During REACH: fine guidance, declare arrived when very close.
     private fun processReach(target: com.echowalk.teama.Hazard?, now: Long) {
         if (target == null) {
-            handleLost(now)
+            // In REACH phase a disappearing detection almost always means the object is
+            // right in front — so close it left the camera frame. Declare found immediately
+            // instead of treating it as LOST.
+            if (lastSeenMs > 0 && now - lastSeenMs < REACH_LOST_GRACE_MS) {
+                audio.speak("The ${friendlyName(targetClass)} is very close — you can reach it now.", flush = false)
+                onFound()
+            } else {
+                handleLost(now)
+            }
             return
         }
         lastSeenMs = now
@@ -193,8 +201,9 @@ class FindModeController(
         private const val REACH_DEPTH             = 7.5f    // declare arrived (very close)
         private const val GUIDANCE_RATE_MS        = 2_000L
         private const val REPEAT_SAME_RATE_MS     = 4_000L
-        private const val LOST_TIMEOUT_MS         = 2_500L
-        private const val AUTO_EXIT_MS            = 9_000L
+        private const val LOST_TIMEOUT_MS         = 3_500L  // NAVIGATE: wait longer before "lost it"
+        private const val REACH_LOST_GRACE_MS     = 4_000L  // REACH: if gone within 4s → declare found
+        private const val AUTO_EXIT_MS            = 12_000L // longer grace before giving up
         private const val SCAN_ANNOUNCE_RATE_MS   = 2_000L
         private const val SCAN_NUDGE_MS           = 5_000L
         private const val TREND_WINDOW            = 4
