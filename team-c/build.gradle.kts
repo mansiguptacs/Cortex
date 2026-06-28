@@ -1,10 +1,5 @@
 plugins {
     kotlin("jvm") version "2.0.20" apply false
-}
-
-allprojects {
-    repositories {
-        mavenCentral()
-        google()
-    }
+    id("com.android.application") version "8.7.3" apply false
+    kotlin("android") version "2.0.20" apply false
 }
