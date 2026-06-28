@@ -109,7 +109,7 @@ class FindModeController(
 
         // Arrived — object is right in front and very close
         if (target.distanceM >= REACH_DEPTH && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
-            audio.speak("You've reached the ${friendlyName(targetClass)}.", flush = false)
+            audio.speak("The ${friendlyName(targetClass)} is very close — you can reach it now.", flush = false)
             onFound()
             return
         }
