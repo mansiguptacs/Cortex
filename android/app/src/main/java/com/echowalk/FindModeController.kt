@@ -6,17 +6,14 @@ import com.echowalk.teama.RadarState
 /**
  * Guides the user toward a named YOLO target class.
  *
- * On each [process] call:
- *  1. Scans [RadarState.hazards] for the target class.
- *  2. Computes azimuth-based direction ("Turn left / right / Walk forward").
- *  3. Tracks [distanceM] trend to confirm approach.
- *  4. Declares **found** when the target is close + centred.
- *  5. Handles **lost** state when target leaves frame for > [LOST_TIMEOUT_MS].
+ * Two phases:
+ *  1. **SCAN** — target not yet seen. User is asked to rotate slowly. Every new object class
+ *     visible is announced ("I see a chair on your left"). When the target first appears, switches
+ *     to NAVIGATE.
+ *  2. **NAVIGATE** — target is visible. Gives azimuth-based directions + distance trend.
+ *     Declares FOUND when target is close + centred. Handles LOST if target leaves frame.
  *
- * All guidance is spoken via [AudioOutputManager.speak] and rate-limited to [GUIDANCE_RATE_MS].
- * The safety radar (SpatialAudioEngine) continues running underneath — wall beeps are unaffected.
- *
- * [onFound] is called when the target is reached; [onLost] when it's lost too long.
+ * During Find mode the [VoiceWarningEngine] is in safetyOnlyMode so object chatter is muted.
  */
 class FindModeController(
     private val targetClass: String,
@@ -24,31 +21,66 @@ class FindModeController(
     private val onFound: () -> Unit,
     private val onLost: () -> Unit,
 ) {
+    private enum class Phase { SCAN, NAVIGATE }
+
+    private var phase = Phase.SCAN
     private var lastGuidanceMs = 0L
     private var lastSeenMs = 0L
     private var lastPhrase = ""
-
-    // Rolling window of the last N distanceM readings to detect approach trend.
+    private val announcedClasses = mutableSetOf<String>() // classes announced during SCAN
     private val distanceWindow = ArrayDeque<Float>(TREND_WINDOW)
 
     fun process(state: RadarState) {
         if (audio.isSpeaking()) return
         val now = System.currentTimeMillis()
 
-        // Find the best (closest) matching hazard for the target class.
         val target = state.hazards
             .filter { it.cls == targetClass }
             .maxByOrNull { it.distanceM }
 
+        return when (phase) {
+            Phase.SCAN -> processScan(state, target, now)
+            Phase.NAVIGATE -> processNavigate(target, now)
+        }
+    }
+
+    // During SCAN: announce every new object class seen, switch to NAVIGATE when target appears.
+    private fun processScan(state: RadarState, target: com.echowalk.teama.Hazard?, now: Long) {
+        if (target != null) {
+            // Target spotted — switch to navigation.
+            phase = Phase.NAVIGATE
+            lastSeenMs = now
+            audio.speak("Found it — ${friendlyName(targetClass)} ahead. I'll guide you.", flush = false)
+            lastGuidanceMs = now
+            return
+        }
+        // Announce any new visible objects to help orient the user.
+        if (now - lastGuidanceMs < SCAN_ANNOUNCE_RATE_MS) return
+        val newClass = state.hazards
+            .filterNot { it.cls == targetClass || it.cls in announcedClasses }
+            .maxByOrNull { it.distanceM }
+        if (newClass != null) {
+            announcedClasses.add(newClass.cls)
+            val dir = directionPhrase(newClass.azimuthDeg)
+            audio.speak("I see a ${friendlyName(newClass.cls)} $dir", flush = false)
+            lastGuidanceMs = now
+        } else if (now - lastGuidanceMs > SCAN_NUDGE_MS) {
+            // Nothing new visible — nudge to keep rotating.
+            audio.speak("Keep turning slowly", flush = false)
+            lastGuidanceMs = now
+        }
+    }
+
+    // During NAVIGATE: give directional guidance toward the target.
+    private fun processNavigate(target: com.echowalk.teama.Hazard?, now: Long) {
         if (target == null) {
-            // Target not visible in this frame.
             if (lastSeenMs > 0 && now - lastSeenMs > LOST_TIMEOUT_MS) {
                 if (now - lastGuidanceMs > GUIDANCE_RATE_MS) {
                     lastGuidanceMs = now
-                    audio.speak("I lost it — turn slowly", flush = false)
+                    audio.speak("Lost it — turn slowly", flush = false)
                 }
                 if (now - lastSeenMs > AUTO_EXIT_MS) {
-                    audio.speak("${friendlyName(targetClass)} not found. Exiting find mode.", flush = false)
+                    audio.speak("${friendlyName(targetClass)} not found. Exiting.", flush = false)
                     onLost()
                 }
             }
@@ -56,12 +88,10 @@ class FindModeController(
         }
 
         lastSeenMs = now
-
-        // Track distance trend.
         if (distanceWindow.size >= TREND_WINDOW) distanceWindow.removeFirst()
         distanceWindow.addLast(target.distanceM)
 
-        // Declare found: target centred + very close.
+        // Declare found: target centred + close enough (lowered threshold to match real readings).
         if (target.distanceM >= FOUND_DEPTH && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
             audio.speak("You've reached the ${friendlyName(targetClass)}.", flush = false)
             onFound()
@@ -70,7 +100,7 @@ class FindModeController(
 
         if (now - lastGuidanceMs < GUIDANCE_RATE_MS) return
 
-        val phrase = buildGuidancePhrase(target.azimuthDeg, target.distanceM)
+        val phrase = buildNavigationPhrase(target.azimuthDeg, target.distanceM)
         if (phrase == lastPhrase && now - lastGuidanceMs < REPEAT_SAME_RATE_MS) return
 
         lastGuidanceMs = now
@@ -78,21 +108,26 @@ class FindModeController(
         audio.speak(phrase, flush = false)
     }
 
-    private fun buildGuidancePhrase(azimuthDeg: Float, distanceM: Float): String {
-        val direction = when {
+    private fun buildNavigationPhrase(azimuthDeg: Float, distanceM: Float): String {
+        return when {
             azimuthDeg < -AZ_THRESHOLD -> "Turn left"
             azimuthDeg >  AZ_THRESHOLD -> "Turn right"
             else -> {
                 val trend = distanceTrend()
                 when {
-                    trend == Trend.APPROACHING -> "Getting closer"
+                    trend == Trend.APPROACHING -> "Getting closer — keep going"
                     trend == Trend.RECEDING    -> "Getting farther — try turning"
-                    distanceM >= 7f            -> "Walk forward"
+                    distanceM >= 6f            -> "Walk forward"
                     else                       -> "Walk forward slowly"
                 }
             }
         }
-        return direction
+    }
+
+    private fun directionPhrase(az: Float) = when {
+        az < -13f -> "on your left"
+        az >  13f -> "on your right"
+        else      -> "ahead"
     }
 
     private enum class Trend { APPROACHING, RECEDING, STABLE }
@@ -108,41 +143,35 @@ class FindModeController(
     }
 
     fun reset() {
+        phase = Phase.SCAN
         lastGuidanceMs = 0L
         lastSeenMs = 0L
         lastPhrase = ""
+        announcedClasses.clear()
         distanceWindow.clear()
     }
 
     private fun friendlyName(cls: String): String = FRIENDLY.getOrDefault(cls, cls)
 
     companion object {
-        private const val AZ_THRESHOLD = 13f      // degrees — within this = "forward"
-        private const val FOUND_DEPTH = 8.5f      // normalised depth — "you've arrived"
-        private const val FOUND_AZ_DEG = 13f      // degrees — centred enough to declare found
-        private const val GUIDANCE_RATE_MS = 2_000L
-        private const val REPEAT_SAME_RATE_MS = 4_000L
-        private const val LOST_TIMEOUT_MS = 2_000L
-        private const val AUTO_EXIT_MS = 8_000L
-        private const val TREND_WINDOW = 4
-        private const val TREND_DELTA = 0.4f
+        private const val AZ_THRESHOLD    = 20f      // degrees — wider zone = "forward"
+        private const val FOUND_DEPTH     = 6.5f     // lowered from 8.5; typical close reading is 6-7
+        private const val FOUND_AZ_DEG    = 25f      // wider: user doesn't need to be perfectly centred
+        private const val GUIDANCE_RATE_MS         = 2_000L
+        private const val REPEAT_SAME_RATE_MS      = 4_000L
+        private const val LOST_TIMEOUT_MS          = 2_500L
+        private const val AUTO_EXIT_MS             = 9_000L
+        private const val SCAN_ANNOUNCE_RATE_MS    = 2_000L // how often to announce scan objects
+        private const val SCAN_NUDGE_MS            = 5_000L // nudge "keep turning" after this silence
+        private const val TREND_WINDOW  = 4
+        private const val TREND_DELTA   = 0.4f
 
         private val FRIENDLY = mapOf(
-            "person" to "person",
-            "chair" to "chair",
-            "couch" to "couch",
-            "dining table" to "table",
-            "tv" to "screen",
-            "laptop" to "laptop",
-            "cup" to "cup",
-            "bottle" to "bottle",
-            "backpack" to "bag",
-            "suitcase" to "suitcase",
-            "refrigerator" to "fridge",
-            "cell phone" to "phone",
-            "book" to "book",
-            "clock" to "clock",
-            "bowl" to "bowl",
+            "person" to "person", "chair" to "chair", "couch" to "couch",
+            "dining table" to "table", "tv" to "screen", "laptop" to "laptop",
+            "cup" to "cup", "bottle" to "bottle", "backpack" to "bag",
+            "suitcase" to "suitcase", "refrigerator" to "fridge",
+            "cell phone" to "phone", "book" to "book", "clock" to "clock",
         )
     }
 }

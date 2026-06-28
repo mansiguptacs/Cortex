@@ -26,12 +26,12 @@ class VoiceWarningEngine(private val audio: AudioOutputManager) {
 
     private var lastFlatWallMs = 0L
 
-    fun process(state: RadarState) {
+    fun process(state: RadarState, safetyOnlyMode: Boolean = false) {
         if (audio.isSpeaking()) return
         val now = System.currentTimeMillis()
 
         checkFlatWall(state, now)
-        checkHazards(state, now)
+        if (!safetyOnlyMode) checkHazards(state, now)
     }
 
     private fun checkFlatWall(state: RadarState, now: Long) {

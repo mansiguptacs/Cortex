@@ -50,9 +50,11 @@ class AudioOutputManager(context: Context) {
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.getDefault()
                 tts?.setOnUtteranceProgressListener(progressListener)
-                // Slightly slower than default for intelligibility of scene descriptions.
-                tts?.setSpeechRate(0.95f)
+                tts?.setSpeechRate(1.1f) // slightly faster = snappier for navigation alerts
                 ttsReady = true
+                // Fire a silent warmup utterance so the first real phrase has no cold-start lag.
+                val id = "warmup-${System.nanoTime()}"
+                tts?.speak(" ", TextToSpeech.QUEUE_FLUSH, null, id)
             }
         }
     }

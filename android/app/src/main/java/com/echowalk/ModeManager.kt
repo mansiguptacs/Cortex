@@ -80,6 +80,9 @@ class ModeManager(
     @Volatile
     private var lastDescription: String? = null
 
+    @Volatile
+    private var latestRadarState: RadarState? = null
+
     /** True when the describer can rank scenes cheaply enough for ambient (auto) mode. */
     val ambientSupported: Boolean get() = describer is AmbientScene
 
@@ -98,10 +101,12 @@ class ModeManager(
     }
 
     private fun onRadarState(state: RadarState) {
+        latestRadarState = state
         // SpatialAudioEngine consumes RadarState directly inside SafetyRadarController.
         // Here we layer the slow semantic channels on top.
         if (mode == AppMode.NAVIGATING || mode == AppMode.FINDING) {
-            voiceWarning.process(state)
+            // In Find mode only pass safety-critical events (drop-off, flat wall); mute object noise.
+            voiceWarning.process(state, safetyOnlyMode = mode == AppMode.FINDING)
         }
         if (mode == AppMode.FINDING) {
             findController?.process(state)
@@ -122,7 +127,8 @@ class ModeManager(
 
     // --- On-demand describe (hotkey / button / tap) ---------------------------------------------
 
-    /** Hotkey/button entry point: pause radar, run the describer on a short burst, speak, resume. */
+    /** Hotkey/button entry point: describe the scene. Uses YOLO detections as an instant fallback
+     *  when the VLM/classifier model isn't loaded (MOCK mode). */
     fun describeScene() {
         if (mode == AppMode.DESCRIBING || mode == AppMode.FINDING) return
         val first = frames.latest()
@@ -150,14 +156,21 @@ class ModeManager(
 
                 emit(Phase.THINKING, "Thinking...", null)
                 audio.cueThinking()
-                // Temporal voting: sample a short burst so one odd frame can't decide the answer.
+
+                // Try the VLM/classifier first; if it returns a generic Mock phrase, fall back to
+                // a YOLO-based description using the detections already running in the radar.
                 val burst = captureBurst().ifEmpty { listOf(first) }
                 val startNs = System.nanoTime()
-                val text = withContext(Dispatchers.Default) { describer.describe(burst) }
+                val modelText = withContext(Dispatchers.Default) { describer.describe(burst) }
                 val latencyMs = (System.nanoTime() - startNs) / 1_000_000
 
+                val text = if (modelText.isBlank() || modelText.contains("mock", ignoreCase = true)) {
+                    buildYoloDescription()
+                } else {
+                    modelText
+                }
+
                 lastDescription = text
-                // Tell ambient mode what we just said so it doesn't immediately echo the same scene.
                 (describer as? SceneDiagnostics)?.lastTopK()?.firstOrNull()
                     ?.let { stabilizer.noteAnnounced(it.label, System.currentTimeMillis()) }
                 audio.cueDone()
@@ -168,6 +181,37 @@ class ModeManager(
             }
         }
     }
+
+    /** Build a spoken description from the latest YOLO detections — works with zero extra models. */
+    private fun buildYoloDescription(): String {
+        val state = latestRadarState
+        if (state == null || state.hazards.isEmpty()) return "I don't see any recognisable objects right now."
+        // Group by class, deduplicate, sort by closest (highest distanceM = closest in relative depth).
+        val grouped = state.hazards
+            .groupBy { it.cls }
+            .mapValues { (_, v) -> v.maxByOrNull { it.distanceM }!! }
+            .values
+            .sortedByDescending { it.distanceM }
+            .take(4) // cap at 4 objects to keep the phrase short
+        val parts = grouped.map { h ->
+            val dir = when {
+                h.azimuthDeg < -13f -> "on your left"
+                h.azimuthDeg >  13f -> "on your right"
+                else -> "ahead"
+            }
+            "${friendlyLabel(h.cls)} $dir"
+        }
+        return when (parts.size) {
+            1 -> "I see a ${parts[0]}."
+            2 -> "I see a ${parts[0]}, and a ${parts[1]}."
+            else -> "I see a ${parts.dropLast(1).joinToString(", a ")}, and a ${parts.last()}."
+        }
+    }
+
+    private fun friendlyLabel(cls: String) = mapOf(
+        "person" to "person", "dining table" to "table", "tv" to "screen",
+        "cell phone" to "phone", "backpack" to "bag", "refrigerator" to "fridge",
+    ).getOrDefault(cls, cls)
 
     /** Replay the last description (long-press / double-tap) without re-running inference. */
     fun repeatLast() {
