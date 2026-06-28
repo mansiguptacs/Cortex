@@ -34,6 +34,9 @@ class AudioOutputManager(context: Context) {
     @Volatile
     private var speaking = false
 
+    @Volatile
+    private var lastGreetedMs = 0L
+
     /** Per-utterance completion callbacks, invoked when that utterance finishes (or errors). */
     private val doneCallbacks = ConcurrentHashMap<String, () -> Unit>()
 
@@ -50,13 +53,25 @@ class AudioOutputManager(context: Context) {
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.getDefault()
                 tts?.setOnUtteranceProgressListener(progressListener)
-                tts?.setSpeechRate(1.1f) // slightly faster = snappier for navigation alerts
+                tts?.setSpeechRate(1.1f)
                 ttsReady = true
-                // Warmup utterance — also greets the user on launch.
-                val id = "warmup-${System.nanoTime()}"
-                tts?.speak("Hello, welcome to Cortex app", TextToSpeech.QUEUE_FLUSH, null, id)
+                greet()
             }
         }
+    }
+
+    /**
+     * Speak the welcome greeting. Safe to call from [onResume] — rate-limited so it only fires
+     * once per [GREET_COOLDOWN_MS] (5 min). Also handles the case where TTS wasn't ready yet on
+     * the first [init] call (backgrounded app returning after the engine warmed up).
+     */
+    fun greet() {
+        if (!ttsReady) return
+        val now = System.currentTimeMillis()
+        if (now - lastGreetedMs < GREET_COOLDOWN_MS) return
+        lastGreetedMs = now
+        val id = "warmup-${System.nanoTime()}"
+        tts?.speak("Hello, welcome to Cortex app", TextToSpeech.QUEUE_FLUSH, null, id)
     }
 
     /** Adjust speech rate (1.0 = normal). Useful for a future verbosity / clarity setting. */
@@ -148,5 +163,10 @@ class AudioOutputManager(context: Context) {
         tones = null
         speaking = false
         doneCallbacks.clear()
+    }
+
+    companion object {
+        /** Minimum gap between greeting announcements — avoids repeating on every app switch. */
+        private const val GREET_COOLDOWN_MS = 5 * 60 * 1000L  // 5 minutes
     }
 }

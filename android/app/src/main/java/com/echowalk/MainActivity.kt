@@ -213,6 +213,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Re-greet if coming back from background (e.g. app was backgrounded overnight).
+        // greet() is rate-limited internally — silent if already greeted within 5 minutes.
+        if (::audio.isInitialized) audio.greet()
         if (::ambientSwitch.isInitialized && ambientSwitch.isChecked && modeManager.ambientSupported) {
             modeManager.startAmbient()
         }
