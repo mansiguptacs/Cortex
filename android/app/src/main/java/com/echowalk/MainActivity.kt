@@ -46,6 +46,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modeManager: ModeManager
     private lateinit var speechInput: SpeechInputController
     private lateinit var radar: SafetyRadarController
+    private lateinit var spatial: SpatialAudioEngine
     private lateinit var overlay: ObjectOverlayView
 
     private lateinit var previewView: PreviewView
@@ -98,7 +99,7 @@ class MainActivity : AppCompatActivity() {
         audio = AudioOutputManager(this) // init() deferred until modeManager exists (drives onboarding)
 
         // Team A: load depth + YOLO models onto Hexagon NPU (graceful null if assets missing).
-        val spatial = SpatialAudioEngine(audio)
+        spatial = SpatialAudioEngine(audio)
         val depthMod = try { TfliteQnnModule.loadAsset(this, "depth_anything_v2.tflite") }
                        catch (t: Throwable) { Log.w(TAG, "depth model unavailable", t); null }
         val yoloMod  = try { TfliteQnnModule.loadAsset(this, "yolov10_det.tflite") }
@@ -257,6 +258,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         if (::modeManager.isInitialized) modeManager.stop()
         if (::radar.isInitialized) radar.destroy()
+        if (::spatial.isInitialized) spatial.release()
         if (::frames.isInitialized) frames.shutdown()
         if (::audio.isInitialized) audio.shutdown()
         if (::speechInput.isInitialized) speechInput.release()

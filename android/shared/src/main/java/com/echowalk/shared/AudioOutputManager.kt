@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
+import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.speech.tts.TextToSpeech
@@ -96,11 +97,14 @@ class AudioOutputManager(context: Context) {
     }
 
     /**
-     * Speak a phrase (guidance or scene description). Ducks radar tones for its duration.
-     * [onDone] fires (on a TTS thread) when this utterance finishes or errors — use it to advance
-     * UI state precisely instead of guessing at a duration.
+     * Speak a phrase (guidance or scene description).
+     *
+     * @param pan stereo position of the voice: -1 = full left ear, 0 = centered, +1 = full right ear.
+     *  Used so a directional announcement actually comes from the side the object is on.
+     * @param onDone fires (on a TTS thread) when this utterance finishes or errors — use it to
+     *  advance UI state precisely instead of guessing at a duration.
      */
-    fun speak(text: String, flush: Boolean = true, onDone: (() -> Unit)? = null) {
+    fun speak(text: String, flush: Boolean = true, pan: Float = 0f, onDone: (() -> Unit)? = null) {
         if (!ttsReady) {
             onDone?.invoke()
             return
@@ -109,7 +113,11 @@ class AudioOutputManager(context: Context) {
         val id = "echowalk-${System.nanoTime()}"
         if (onDone != null) doneCallbacks[id] = onDone
         val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-        tts?.speak(text, mode, null, id)
+        val params = Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, pan.coerceIn(-1f, 1f))
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f)
+        }
+        tts?.speak(text, mode, params, id)
     }
 
     // --- Earcons: tiny audio cues paired with light haptics, for eyes-free state feedback. ---

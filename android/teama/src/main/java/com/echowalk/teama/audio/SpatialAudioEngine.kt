@@ -1,215 +1,127 @@
 package com.echowalk.teama.audio
 
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioTrack
 import com.echowalk.shared.AudioOutputManager
-import com.echowalk.teama.HazardKind
 import com.echowalk.teama.RadarState
-import kotlin.math.PI
-import kotlin.math.sin
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Turns a [RadarState] into spatial audio + haptics:
- *   - distance (relative depth) -> pitch / ping cadence (closer = faster, higher)
- *   - azimuth                   -> stereo pan (left/right ear)
- *   - kind                      -> timbre (soft hum for WALL, urgent ping for OBSTACLE,
- *                                  distinct DROPOFF buzz) + haptic on URGENT
+ * Proximity **haptic** guidance for Team A's safety radar.
  *
- * Ducks itself while speech plays via [AudioOutputManager.isSpeaking].
+ * Replaces the old continuous audio "beeps" with a calm, eyes-free *tactile* channel so the user
+ * isn't overwhelmed by sound. The closer the nearest obstacle, the faster and stronger the phone
+ * pulses — a "geiger-counter" feel that intuitively guides the user as they approach something.
+ * Speech (Team A semantic warnings + Team B scene description) is now the only audio output.
  *
- * Tone synthesis: pre-rendered short stereo ping buffers per (kind, urgency band), played via
- * [AudioTrack.MODE_STATIC] for low latency. We re-trigger them based on a per-zone cadence.
+ * The pulse loop runs on its own thread, *decoupled from the radar's inference rate*: [render]
+ * just records the latest proximity, while a dedicated loop emits pulses at the proximity-scaled
+ * cadence. This keeps the haptics responsive (fast pulses when close) even when depth+YOLO
+ * inference is only a few frames per second.
+ *
+ * Mapping (relative depth from Depth-Anything-V2; higher value = closer):
+ *   - below [NEAR_START]            → silent (nothing close; don't buzz)
+ *   - [NEAR_START] … [NEAR_FULL]    → interval [PULSE_SLOW_MS]→[PULSE_FAST_MS],
+ *                                     amplitude [AMP_MIN]→[AMP_MAX], duration [DUR_MIN_MS]→[DUR_MAX_MS]
+ *
+ * The class name + constructor are intentionally unchanged so the existing radar wiring
+ * ([com.echowalk.teama.SafetyRadarController], ModeManager, the Team A harness) needs no edits.
+ * Hosts should call [release] from onDestroy to stop the pulse thread.
  */
 class SpatialAudioEngine(
     private val audio: AudioOutputManager,
 ) {
-    private val sampleRate = 44_100
-    private val toneMs = 80
-    private val toneSamples = (sampleRate * toneMs) / 1000
+    @Volatile
+    private var latestRel = Float.NEGATIVE_INFINITY
 
-    // [kind][urgency] -> stereo AudioTrack
-    private val tones: Array<Array<AudioTrack?>> = Array(3) { arrayOfNulls<AudioTrack>(3) }
+    @Volatile
+    private var latestRelMs = 0L
 
-    private val zoneNextDueMs = longArrayOf(0L, 0L, 0L)
-    private var lastHapticMs = 0L
+    private val running = AtomicBoolean(true)
 
-    init {
-        val pingFreq = floatArrayOf(900f, 1300f, 1700f) // SOFT / MID / URGENT
-        val humFreq = floatArrayOf(180f, 220f, 260f)
-        val dropFreq = floatArrayOf(420f, 380f, 320f)
-        for (k in 0..2) for (u in 0..2) {
-            val freq = when (k) {
-                0 -> humFreq[u]   // WALL
-                1 -> pingFreq[u]  // OBSTACLE
-                else -> dropFreq[u] // DROPOFF
-            }
-            val isHum = (k == 0)
-            tones[k][u] = makeTone(freq, isHum)
-        }
+    private val pulseThread = Thread(::pulseLoop, "radar-haptic").apply {
+        isDaemon = true
+        start()
     }
 
+    /** Called once per radar tick: record how close the nearest obstacle is right now. */
     fun render(state: RadarState) {
-        if (audio.isSpeaking()) return // duck under speech
-        val now = System.currentTimeMillis()
+        latestRel = nearestProximity(state)
+        latestRelMs = System.currentTimeMillis()
+    }
 
-        // Depth-Anything-V2 returns per-frame normalized relative depth, so a single global
-        // threshold is unreliable — every frame contains "high" values somewhere. To avoid the
-        // constant-beep problem, a zone only beeps when it is clearly the *dominant* (closest)
-        // zone in the current frame. Hazards from YOLO/drop-off detector always beep.
-        val zones = state.zoneNearestM
-        val finiteZones = zones.filter { it.isFinite() }
-        val zoneMax = finiteZones.maxOrNull() ?: Float.NEGATIVE_INFINITY
-        val zoneMin = finiteZones.minOrNull() ?: Float.NEGATIVE_INFINITY
-        val zoneSpread = zoneMax - zoneMin
-
-        // Only consider a zone-only beep if there's meaningful directional contrast in the frame
-        // (one side noticeably closer than the others) AND the dominant zone is genuinely close.
-        val zoneSpeaks = zoneSpread >= ZONE_DOMINANCE_DELTA && zoneMax >= ZONE_MIN_TO_BEEP
-        if (zoneSpeaks) {
-            for (z in 0..2) {
-                val rel = if (zones[z].isFinite()) zones[z] else Float.NEGATIVE_INFINITY
-                // A zone is "dominant" if it's close to the frame max.
-                if (zoneMax - rel > ZONE_DOMINANCE_TOL) continue
-                val urgency = urgencyBand(rel) ?: continue
-                if (now < zoneNextDueMs[z]) continue
-                val pan = (z - 1).toFloat()
-                playTone(kindIndexForZone(state, z), urgency, pan)
-                zoneNextDueMs[z] = now + cadenceMsForUrgency(urgency)
+    /** Emits proximity-scaled vibration pulses until [release]; rate is independent of radar FPS. */
+    private fun pulseLoop() {
+        while (running.get()) {
+            val now = System.currentTimeMillis()
+            val rel = latestRel
+            val fresh = now - latestRelMs < STALE_MS // stop buzzing if radar paused/stalled
+            if (fresh && rel >= NEAR_START) {
+                val t = ((rel - NEAR_START) / (NEAR_FULL - NEAR_START)).coerceIn(0f, 1f)
+                val amplitude = lerp(AMP_MIN, AMP_MAX, t).toInt().coerceIn(1, 255)
+                val durationMs = lerp(DUR_MIN_MS, DUR_MAX_MS, t).toLong()
+                val intervalMs = lerp(PULSE_SLOW_MS, PULSE_FAST_MS, t).toLong()
+                audio.haptic(durationMs, amplitude)
+                sleepQuietly(intervalMs)
+            } else {
+                sleepQuietly(IDLE_POLL_MS)
             }
-        }
-
-        // YOLO hazards / drop-offs always beep (they're semantic, not noisy).
-        for (h in state.hazards) {
-            if (h.kind == HazardKind.WALL) continue // walls handled by the zone path
-            val urgency = urgencyBand(h.distanceM) ?: 0
-            val zone = azimuthToZone(h.azimuthDeg)
-            if (now < zoneNextDueMs[zone]) continue
-            val pan = (h.azimuthDeg / (HALF_FOV_DEG)).coerceIn(-1f, 1f)
-            val kindIdx = when (h.kind) {
-                HazardKind.WALL -> 0
-                HazardKind.OBSTACLE -> 1
-                HazardKind.DROPOFF -> 2
-            }
-            playTone(kindIdx, urgency, pan)
-            zoneNextDueMs[zone] = now + cadenceMsForUrgency(urgency)
-        }
-
-        // Haptic on any imminent OBSTACLE / DROPOFF.
-        val imminent = state.hazards.any {
-            (it.kind == HazardKind.OBSTACLE || it.kind == HazardKind.DROPOFF) &&
-                urgencyBand(it.distanceM) == 2
-        }
-        if (imminent && now - lastHapticMs > 250) {
-            audio.haptic(80)
-            lastHapticMs = now
         }
     }
 
-    private fun azimuthToZone(az: Float): Int = when {
-        az < -HALF_FOV_DEG / 3f -> 0
-        az > HALF_FOV_DEG / 3f -> 2
-        else -> 1
-    }
+    /**
+     * The closest signal in the frame. Prefers semantic YOLO hazards (a real object you're nearing);
+     * lets the raw depth zones contribute only when one zone is *clearly* the nearest (e.g. a wall
+     * straight ahead). This dominance gate prevents constant buzzing in cluttered scenes where the
+     * normalized depth always has a "near" value somewhere.
+     */
+    private fun nearestProximity(state: RadarState): Float {
+        val hazardMax = state.hazards.maxOfOrNull { it.distanceM } ?: Float.NEGATIVE_INFINITY
 
-    private fun kindIndexForZone(state: RadarState, zone: Int): Int {
-        // Prefer hazard kind if any hazard lies within this zone's azimuth band.
-        val zoneAzimuth = (zone - 1) * 26f // each zone covers ~26 degrees of the 78° FOV
-        var best = HazardKind.OBSTACLE
-        var bestDist = Float.NEGATIVE_INFINITY
-        for (h in state.hazards) {
-            if (kotlin.math.abs(h.azimuthDeg - zoneAzimuth) < 18f && h.distanceM > bestDist) {
-                bestDist = h.distanceM
-                best = h.kind
-            }
+        val finite = state.zoneNearestM.filter { it.isFinite() }
+        val zoneContribution = if (finite.size >= 2) {
+            val zMax = finite.max()
+            val zMin = finite.min()
+            if (zMax - zMin >= ZONE_DOMINANCE_DELTA && zMax >= ZONE_MIN_TO_PULSE) zMax
+            else Float.NEGATIVE_INFINITY
+        } else {
+            Float.NEGATIVE_INFINITY
         }
-        return when (best) { HazardKind.WALL -> 0; HazardKind.OBSTACLE -> 1; HazardKind.DROPOFF -> 2 }
+
+        return maxOf(hazardMax, zoneContribution)
     }
 
-    private fun urgencyBand(rel: Float): Int? = when {
-        rel >= 8.5f -> 2  // URGENT
-        rel >= 6.5f -> 1  // MID
-        rel >= 5.0f -> 0  // SOFT
-        else -> null      // too far / no signal
+    private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+    private fun sleepQuietly(ms: Long) {
+        try {
+            Thread.sleep(ms)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /** Stop the pulse thread. Safe to call multiple times. */
+    fun release() {
+        running.set(false)
+        pulseThread.interrupt()
     }
 
     private companion object {
-        // A zone must be at least this much closer than the farthest zone in the frame to beep.
+        // Proximity window (relative depth). Matches the radar's urgency thresholds (5.0 / 8.5).
+        const val NEAR_START = 5.0f      // below this: nothing close → no haptic
+        const val NEAR_FULL = 9.0f       // at/above this: fastest, strongest pulses
+
+        const val PULSE_SLOW_MS = 700f   // gentle, sparse taps when an object first comes into range
+        const val PULSE_FAST_MS = 110f   // rapid, urgent buzzing when very close
+        const val AMP_MIN = 60f          // light tap (1..255)
+        const val AMP_MAX = 255f         // full-strength buzz
+        const val DUR_MIN_MS = 18f
+        const val DUR_MAX_MS = 45f
+
+        const val IDLE_POLL_MS = 150L    // how often to re-check proximity while nothing is close
+        const val STALE_MS = 5_000L      // ignore readings older than this (radar paused during describe)
+
+        // Depth-zone dominance gate (mirrors the previous audio engine) so zones don't buzz nonstop.
         const val ZONE_DOMINANCE_DELTA = 2.5f
-        // A "dominant" zone is one within this tolerance of the frame's nearest zone.
-        const val ZONE_DOMINANCE_TOL = 1.0f
-        // Even the closest zone won't beep if it isn't above this minimum.
-        const val ZONE_MIN_TO_BEEP = 6.5f
-        // Half the camera's horizontal field of view (matches DepthYoloFusion.HORIZONTAL_FOV_DEG).
-        const val HALF_FOV_DEG = 39f
-    }
-
-    private fun cadenceMsForUrgency(u: Int): Long = when (u) {
-        2 -> 140L
-        1 -> 320L
-        else -> 700L
-    }
-
-    private fun playTone(kind: Int, urgency: Int, pan: Float) {
-        val tone = tones[kind][urgency] ?: return
-        val left = ((1f - pan) * 0.5f).coerceIn(0f, 1f)
-        val right = ((1f + pan) * 0.5f).coerceIn(0f, 1f)
-        try {
-            tone.setStereoVolume(left, right)
-            tone.stop()
-            tone.reloadStaticData()
-            tone.play()
-        } catch (_: Throwable) { /* swallow — audio is best-effort */ }
-    }
-
-    private fun makeTone(freqHz: Float, hum: Boolean): AudioTrack {
-        val pcm = ShortArray(toneSamples * 2)
-        val attackSamples = toneSamples / 6
-        val releaseSamples = toneSamples / 3
-        for (i in 0 until toneSamples) {
-            val t = i.toDouble() / sampleRate
-            val env = when {
-                i < attackSamples -> i.toFloat() / attackSamples
-                i > toneSamples - releaseSamples -> (toneSamples - i).toFloat() / releaseSamples
-                else -> 1f
-            }
-            val s = if (hum) {
-                // soft sine with subtle vibrato — wall hum
-                0.35 * sin(2 * PI * freqHz * t) * (0.85 + 0.15 * sin(2 * PI * 7 * t))
-            } else {
-                // sine + 2nd harmonic — clearer ping
-                0.45 * sin(2 * PI * freqHz * t) + 0.15 * sin(2 * PI * 2 * freqHz * t)
-            }
-            val v = (s * env * 32767.0).toInt().coerceIn(-32768, 32767)
-            pcm[2 * i] = v.toShort()
-            pcm[2 * i + 1] = v.toShort()
-        }
-        val sizeBytes = pcm.size * 2
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(sampleRate)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                    .build()
-            )
-            .setTransferMode(AudioTrack.MODE_STATIC)
-            .setBufferSizeInBytes(sizeBytes)
-            .build()
-        track.write(pcm, 0, pcm.size)
-        return track
-    }
-
-    fun release() {
-        for (k in 0..2) for (u in 0..2) {
-            try { tones[k][u]?.release() } catch (_: Throwable) {}
-            tones[k][u] = null
-        }
+        const val ZONE_MIN_TO_PULSE = 6.5f
     }
 }

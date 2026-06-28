@@ -8,7 +8,8 @@ import com.echowalk.teama.RadarState
  * Translates [RadarState] events into spoken proximity warnings via [AudioOutputManager.speak].
  *
  * Runs alongside [com.echowalk.teama.audio.SpatialAudioEngine]:
- *  - SpatialAudioEngine is the *fast* channel (~140 ms cadence beeps + haptic).
+ *  - SpatialAudioEngine is the *fast* channel — now proximity-scaled haptic pulses (no beeps), so
+ *    the user feels how close things are without any extra sound.
  *  - VoiceWarningEngine is the *slow* semantic channel — fires only on state transitions,
  *    rate-limited so the user isn't flooded with speech.
  *
@@ -78,7 +79,8 @@ class VoiceWarningEngine(private val audio: AudioOutputManager) {
 
             mem.lastAnnouncedMs = now
             mem.lastBand = band
-            audio.speak(phrase, flush = false)
+            // Pan the voice to the side the hazard is on (left ear for a left object, etc.).
+            audio.speak(phrase, flush = false, pan = panFor(h.azimuthDeg))
             return // one warning per radar tick to avoid stacking phrases
         }
     }
@@ -98,7 +100,16 @@ class VoiceWarningEngine(private val audio: AudioOutputManager) {
 
     private fun friendlyName(cls: String): String = FRIENDLY.getOrDefault(cls, cls)
 
+    /** Map an azimuth (deg, -left/+right) to a TTS stereo pan in [-PAN_MAX, +PAN_MAX]. */
+    private fun panFor(azDeg: Float): Float =
+        (azDeg / PAN_FULL_DEG).coerceIn(-1f, 1f) * PAN_MAX
+
     companion object {
+        // Azimuth at/after which the voice is panned as far as we allow; PAN_MAX keeps a little
+        // signal in the opposite ear so the user never goes fully deaf on one side.
+        private const val PAN_FULL_DEG = 28f
+        private const val PAN_MAX = 0.9f
+
         // Flat-wall: all zones below this normalised depth with very small spread = uniform surface.
         private const val FLAT_WALL_ZONE_MAX = 5.0f
         private const val FLAT_WALL_SPREAD_MIN = 2.0f

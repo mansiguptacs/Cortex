@@ -45,6 +45,15 @@ class FindModeController(
 
         if (target != null) ObjectMemory.update(targetClass, target.azimuthDeg)
 
+        // Grab cue: fire when the target has become the *dominant* object in the view — it fills a
+        // meaningful share of the frame AND is clearly the largest thing detected. Bringing an object
+        // close to grab it naturally makes it the majority of the view, which is far more reliable
+        // than the uncalibrated relative-depth distance. Phase-independent so we catch it instantly.
+        if (target != null && isTargetDominant(state, target)) {
+            announceGrab(target)
+            return
+        }
+
         return when (phase) {
             Phase.SCAN     -> processScan(state, target, now)
             Phase.NAVIGATE -> {
@@ -90,7 +99,7 @@ class FindModeController(
         }
         warnedObstacles.add(obstacle.cls)
         lastObstacleMs = now
-        audio.speak("Watch out — ${friendlyName(obstacle.cls)} $dir", flush = false)
+        audio.speak("Watch out — ${friendlyName(obstacle.cls)} $dir", flush = false, pan = panFor(obstacle.azimuthDeg))
     }
 
     // During SCAN: announce every new visible object; switch to NAVIGATE when target appears.
@@ -98,7 +107,7 @@ class FindModeController(
         if (target != null) {
             phase = Phase.NAVIGATE
             lastSeenMs = now
-            audio.speak("Found it — ${friendlyName(targetClass)} ${directionPhrase(target.azimuthDeg)}. I'll guide you.", flush = false)
+            audio.speak("Found it — ${friendlyName(targetClass)} ${directionPhrase(target.azimuthDeg)}. I'll guide you.", flush = false, pan = panFor(target.azimuthDeg))
             lastGuidanceMs = now
             return
         }
@@ -108,7 +117,7 @@ class FindModeController(
             .maxByOrNull { it.distanceM }
         if (newClass != null) {
             announcedClasses.add(newClass.cls)
-            audio.speak("I see a ${friendlyName(newClass.cls)} ${directionPhrase(newClass.azimuthDeg)}", flush = false)
+            audio.speak("I see a ${friendlyName(newClass.cls)} ${directionPhrase(newClass.azimuthDeg)}", flush = false, pan = panFor(newClass.azimuthDeg))
             lastGuidanceMs = now
         } else if (now - lastGuidanceMs > SCAN_NUDGE_MS) {
             audio.speak("Keep turning slowly", flush = false)
@@ -140,7 +149,7 @@ class FindModeController(
         if (phrase == lastPhrase && now - lastGuidanceMs < REPEAT_SAME_RATE_MS) return
         lastGuidanceMs = now
         lastPhrase = phrase
-        audio.speak(phrase, flush = false)
+        audio.speak(phrase, flush = false, pan = panFor(target.azimuthDeg))
     }
 
     // During REACH: fine guidance with tilt hints; declare arrived when very close.
@@ -167,12 +176,7 @@ class FindModeController(
         lastSeenMs = now
         lastElevationDeg = target.elevationDeg
 
-        // Box-area proximity check: when the object fills enough of the frame → grab it.
-        if (target.boxArea >= BOX_AREA_GRAB && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
-            audio.speak("You're very close — reach out and grab the ${friendlyName(targetClass)}!", flush = false)
-            onFound()
-            return
-        }
+        // (Grab range is handled phase-independently in process(); here we cover the approach.)
         // Intermediate close hint (box approaching grab size)
         if (target.boxArea >= BOX_AREA_NEAR && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG
             && now - lastGuidanceMs > GUIDANCE_RATE_MS) {
@@ -187,7 +191,7 @@ class FindModeController(
         if (phrase != lastPhrase) {
             lastGuidanceMs = now
             lastPhrase = phrase
-            audio.speak(phrase, flush = false)
+            audio.speak(phrase, flush = false, pan = panFor(target.azimuthDeg))
         }
     }
 
@@ -260,6 +264,34 @@ class FindModeController(
         else      -> "ahead"
     }
 
+    /** Map an azimuth (deg, -left/+right) to a TTS stereo pan so the voice comes from that side. */
+    private fun panFor(azDeg: Float): Float =
+        (azDeg / PAN_FULL_DEG).coerceIn(-1f, 1f) * PAN_MAX
+
+    /**
+     * True when the target is the *majority* object in the frame: it covers at least [GRAB_MIN_AREA]
+     * of the view and is at least [GRAB_DOMINANCE]× larger than any other detected object. This is
+     * the "it's right here, reach for it" signal — robust to the relative (uncalibrated) depth.
+     */
+    private fun isTargetDominant(state: RadarState, target: com.echowalk.teama.Hazard): Boolean {
+        if (target.boxArea < GRAB_MIN_AREA) return false
+        val largestOther = state.hazards
+            .filter { it.cls != targetClass }
+            .maxOfOrNull { it.boxArea } ?: 0f
+        return target.boxArea >= largestOther * GRAB_DOMINANCE
+    }
+
+    /** Final "you can grab it" cue, with where to reach (left / right / straight in front). */
+    private fun announceGrab(target: com.echowalk.teama.Hazard) {
+        val where = when {
+            target.azimuthDeg < -GRAB_AZ_SIDE -> "to your left"
+            target.azimuthDeg >  GRAB_AZ_SIDE -> "to your right"
+            else                              -> "right in front of you"
+        }
+        audio.speak("You can grab it — the ${friendlyName(targetClass)} is $where.", flush = false, pan = panFor(target.azimuthDeg))
+        onFound()
+    }
+
     private enum class Trend { APPROACHING, RECEDING, STABLE }
 
     private fun distanceTrend(): Trend {
@@ -287,13 +319,19 @@ class FindModeController(
     private fun friendlyName(cls: String): String = FRIENDLY.getOrDefault(cls, cls)
 
     companion object {
+        // Stereo-pan mapping: azimuth at/after which the voice pans as far as we allow (PAN_MAX keeps
+        // a little signal in the opposite ear so the user is never fully deaf on one side).
+        private const val PAN_FULL_DEG            = 28f
+        private const val PAN_MAX                 = 0.9f
         private const val AZ_THRESHOLD            = 20f
         private const val ELEV_TILT_THRESHOLD      = 12f     // degrees — tilt guidance threshold
         private const val FOUND_AZ_DEG            = 25f
         private const val NEAR_DEPTH              = 6.5f    // transition NAVIGATE→REACH
         private const val REACH_DEPTH             = 7.5f    // depth-based arrived threshold (backup)
+        private const val GRAB_MIN_AREA          = 0.15f   // target must fill ≥15% of frame to be "here"
+        private const val GRAB_DOMINANCE         = 1.3f    // …and be ≥1.3× larger than any other object
+        private const val GRAB_AZ_SIDE           = 13f     // |az| under this = "right in front of you"
         private const val BOX_AREA_NEAR           = 0.12f   // ~35% width box → "almost there"
-        private const val BOX_AREA_GRAB           = 0.22f   // ~47% width box → "reach out and grab it"
         private const val GUIDANCE_RATE_MS        = 1_200L
         private const val REPEAT_SAME_RATE_MS     = 3_000L
         private const val OBSTACLE_RATE_MS        = 5_000L  // don't re-warn same obstacle faster than this
