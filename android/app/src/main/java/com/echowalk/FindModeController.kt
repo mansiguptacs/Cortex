@@ -29,7 +29,8 @@ class FindModeController(
     private var lastGuidanceMs = 0L
     private var lastSeenMs = 0L
     private var lastPhrase = ""
-    private val announcedClasses = mutableSetOf<String>() // classes announced during SCAN
+    private var lastElevationDeg = 0f  // last known vertical position of target
+    private val announcedClasses = mutableSetOf<String>()
     private val distanceWindow = ArrayDeque<Float>(TREND_WINDOW)
 
     fun process(state: RadarState) {
@@ -99,23 +100,30 @@ class FindModeController(
         audio.speak(phrase, flush = false)
     }
 
-    // During REACH: fine guidance, declare arrived when very close.
+    // During REACH: fine guidance with tilt hints; declare arrived when very close.
     private fun processReach(target: com.echowalk.teama.Hazard?, now: Long) {
         if (target == null) {
-            // In REACH phase a disappearing detection almost always means the object is
-            // right in front — so close it left the camera frame. Declare found immediately
-            // instead of treating it as LOST.
+            // Object left the frame — infer direction from last known elevation.
             if (lastSeenMs > 0 && now - lastSeenMs < REACH_LOST_GRACE_MS) {
-                audio.speak("The ${friendlyName(targetClass)} is very close — you can reach it now.", flush = false)
+                val tiltHint = when {
+                    lastElevationDeg < -ELEV_TILT_THRESHOLD ->
+                        "Tilt the phone down — the ${friendlyName(targetClass)} is below you."
+                    lastElevationDeg > ELEV_TILT_THRESHOLD ->
+                        "Tilt the phone up — the ${friendlyName(targetClass)} is above you."
+                    else ->
+                        "The ${friendlyName(targetClass)} is very close — you can reach it now."
+                }
+                audio.speak(tiltHint, flush = false)
                 onFound()
             } else {
                 handleLost(now)
             }
             return
         }
-        lastSeenMs = now
 
-        // Arrived — object is right in front and very close
+        lastSeenMs = now
+        lastElevationDeg = target.elevationDeg
+
         if (target.distanceM >= REACH_DEPTH && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
             audio.speak("The ${friendlyName(targetClass)} is very close — you can reach it now.", flush = false)
             onFound()
@@ -123,16 +131,30 @@ class FindModeController(
         }
 
         if (now - lastGuidanceMs < GUIDANCE_RATE_MS) return
-        // Fine corrections in REACH phase
-        val phrase = when {
-            target.azimuthDeg < -AZ_THRESHOLD -> "Slightly left"
-            target.azimuthDeg >  AZ_THRESHOLD -> "Slightly right"
-            else -> "Keep going — almost there"
-        }
+        val phrase = buildReachPhrase(target.azimuthDeg, target.elevationDeg)
         if (phrase != lastPhrase) {
             lastGuidanceMs = now
             lastPhrase = phrase
             audio.speak(phrase, flush = false)
+        }
+    }
+
+    private fun buildReachPhrase(azDeg: Float, elDeg: Float): String {
+        val h = when {
+            azDeg < -AZ_THRESHOLD -> "slightly left"
+            azDeg >  AZ_THRESHOLD -> "slightly right"
+            else -> null
+        }
+        val v = when {
+            elDeg < -ELEV_TILT_THRESHOLD -> "tilt down"
+            elDeg >  ELEV_TILT_THRESHOLD -> "tilt up"
+            else -> null
+        }
+        return when {
+            h != null && v != null -> "Go $h and $v"
+            h != null              -> "Go $h"
+            v != null              -> v.replaceFirstChar { it.uppercase() }
+            else                   -> "Keep going — almost there"
         }
     }
 
@@ -188,6 +210,7 @@ class FindModeController(
         lastGuidanceMs = 0L
         lastSeenMs = 0L
         lastPhrase = ""
+        lastElevationDeg = 0f
         announcedClasses.clear()
         distanceWindow.clear()
     }
@@ -195,8 +218,9 @@ class FindModeController(
     private fun friendlyName(cls: String): String = FRIENDLY.getOrDefault(cls, cls)
 
     companion object {
-        private const val AZ_THRESHOLD            = 20f     // degrees — forward cone
-        private const val FOUND_AZ_DEG            = 25f     // centred enough to declare near/arrived
+        private const val AZ_THRESHOLD            = 20f
+        private const val ELEV_TILT_THRESHOLD      = 12f     // degrees — tilt guidance threshold
+        private const val FOUND_AZ_DEG            = 25f
         private const val NEAR_DEPTH              = 6.5f    // transition NAVIGATE→REACH
         private const val REACH_DEPTH             = 7.5f    // declare arrived (very close)
         private const val GUIDANCE_RATE_MS        = 2_000L

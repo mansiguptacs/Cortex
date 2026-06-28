@@ -53,12 +53,14 @@ class DepthYoloFusion(
             val px1 = (det.x1 * depthW).toInt().coerceIn(px0 + 1, depthW)
             val py1 = (det.y1 * depthH).toInt().coerceIn(py0 + 1, depthH)
             val nearest = trimmedNearest(depth, depthW, px0, py0, px1, py1)
-            val azimuth = ((det.x0 + det.x1) * 0.5f - 0.5f) * HORIZONTAL_FOV_DEG
+            val azimuth   = ((det.x0 + det.x1) * 0.5f - 0.5f) * HORIZONTAL_FOV_DEG
+            // elevation: positive = object is above frame center, negative = below
+            val elevation = (0.5f - (det.y0 + det.y1) * 0.5f) * VERTICAL_FOV_DEG
             val kind = when {
                 det.cls in wallClasses -> HazardKind.WALL
                 else -> HazardKind.OBSTACLE
             }
-            hazards.add(Hazard(cls = det.cls, distanceM = nearest, azimuthDeg = azimuth, kind = kind))
+            hazards.add(Hazard(cls = det.cls, distanceM = nearest, azimuthDeg = azimuth, elevationDeg = elevation, kind = kind))
         }
         // Drop-off check: large depth-drop near bottom-center vs immediate floor below the user.
         detectDropOff(depth, depthW, depthH)?.let { hazards.add(it) }
@@ -169,6 +171,8 @@ class DepthYoloFusion(
 
         // Approximate horizontal FOV of the S25 Ultra back camera in degrees (for stereo pan).
         const val HORIZONTAL_FOV_DEG = 78f
+        // Approximate vertical FOV (portrait orientation).
+        const val VERTICAL_FOV_DEG   = 58f
 
         val WALL_LIKE = setOf("wall", "door", "refrigerator", "bookshelf")
 

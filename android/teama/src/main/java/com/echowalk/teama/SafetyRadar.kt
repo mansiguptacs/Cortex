@@ -5,9 +5,10 @@ enum class HazardKind { WALL, OBSTACLE, DROPOFF }
 
 /** A single detected hazard with its estimated position. */
 data class Hazard(
-    val cls: String,        // e.g. "chair", "person"; "" for raw depth-only
-    val distanceM: Float,   // relative/estimated meters (depth is relative, calibrate thresholds)
-    val azimuthDeg: Float,  // negative = left, 0 = center, positive = right
+    val cls: String,           // e.g. "chair", "person"; "" for raw depth-only
+    val distanceM: Float,      // relative/estimated meters (depth is relative, calibrate thresholds)
+    val azimuthDeg: Float,     // negative = left, 0 = center, positive = right
+    val elevationDeg: Float = 0f, // negative = below center, positive = above center
     val kind: HazardKind,
 )
 
