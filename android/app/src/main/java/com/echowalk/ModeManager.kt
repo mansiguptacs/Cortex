@@ -7,6 +7,7 @@ import com.echowalk.shared.Frame
 import com.echowalk.shared.FrameProvider
 import com.echowalk.teama.RadarState
 import com.echowalk.teama.SafetyRadar
+import com.echowalk.teama.audio.SpatialAudioEngine
 import com.echowalk.teamb.SceneDescriber
 import com.echowalk.teamb.narration.SceneNarration
 import com.echowalk.teamb.narration.SceneStabilizer
@@ -46,6 +47,7 @@ import kotlin.coroutines.resume
 class ModeManager(
     private val frames: FrameProvider,
     private val radar: SafetyRadar,
+    private val spatial: SpatialAudioEngine,
     private val describer: SceneDescriber,
     private val places: PlaceNavigator,
     private val audio: AudioOutputManager,
@@ -58,9 +60,6 @@ class ModeManager(
 
     private val job = SupervisorJob()
     private val scope = CoroutineScope(job + Dispatchers.Default)
-    // Tuned for the Places365 classifier, whose top-1 confidence on real indoor scenes sits ~0.15-0.30
-    // (the default gates are calibrated for sharper models and stay silent here). These thresholds
-    // are local to ambient mode; SceneStabilizer's defaults are unchanged so its unit tests still hold.
     private val stabilizer = SceneStabilizer(
         minConf = 0.08f,
         announceConf = 0.14f,
@@ -69,10 +68,14 @@ class ModeManager(
     )
     private var ambientJob: Job? = null
     private val engineLabel = SceneDescribers.engineLabel(describer)
+    private val voiceWarning = VoiceWarningEngine(audio)
+    private var findController: FindModeController? = null
 
     @Volatile
     var mode: AppMode = AppMode.NAVIGATING
         private set
+
+    val isInFindMode: Boolean get() = mode == AppMode.FINDING
 
     @Volatile
     private var lastDescription: String? = null
@@ -94,9 +97,15 @@ class ModeManager(
         radar.start()
     }
 
-    private fun onRadarState(@Suppress("UNUSED_PARAMETER") state: RadarState) {
-        // Team A's SpatialAudioEngine consumes RadarState directly; arbitration (ducking tones while
-        // speech plays) is handled inside the audio engine via audio.isSpeaking().
+    private fun onRadarState(state: RadarState) {
+        // SpatialAudioEngine consumes RadarState directly inside SafetyRadarController.
+        // Here we layer the slow semantic channels on top.
+        if (mode == AppMode.NAVIGATING || mode == AppMode.FINDING) {
+            voiceWarning.process(state)
+        }
+        if (mode == AppMode.FINDING) {
+            findController?.process(state)
+        }
     }
 
     private fun onPlaceCue(cue: PlaceCue) {
@@ -115,7 +124,7 @@ class ModeManager(
 
     /** Hotkey/button entry point: pause radar, run the describer on a short burst, speak, resume. */
     fun describeScene() {
-        if (mode == AppMode.DESCRIBING) return
+        if (mode == AppMode.DESCRIBING || mode == AppMode.FINDING) return
         val first = frames.latest()
         if (first == null) {
             audio.cueError()
@@ -222,6 +231,33 @@ class ModeManager(
         audio.haptic(15) // subtle nudge that something was said
         audio.speak(text) // isSpeaking() keeps the loop from re-entering until this finishes
         emit(Phase.READY, "$text  (auto)", null)
+    }
+
+    /** Voice-commanded object search: YOLO continuously tracks [targetClass] and guides the user. */
+    fun startFind(targetClass: String) {
+        if (mode == AppMode.FINDING) stopFind()
+        mode = AppMode.FINDING
+        voiceWarning.reset()
+        findController = FindModeController(
+            targetClass = targetClass,
+            audio = audio,
+            onFound = {
+                stopFind()
+                emit(Phase.READY, "Found the ${targetClass}!", null)
+            },
+            onLost = {
+                stopFind()
+                emit(Phase.READY, idleMessage(), null)
+            },
+        )
+        emit(Phase.READY, "Searching for $targetClass…", null)
+    }
+
+    fun stopFind() {
+        findController?.reset()
+        findController = null
+        enterNavigating()
+        emit(Phase.READY, idleMessage(), null)
     }
 
     fun stop() {

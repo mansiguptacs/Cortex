@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
@@ -15,7 +16,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import com.echowalk.shared.AudioOutputManager
+import com.echowalk.shared.TfliteQnnModule
 import com.echowalk.shared.camera.CameraXFrameProvider
+import com.echowalk.teama.SafetyRadarController
+import com.echowalk.teama.audio.SpatialAudioEngine
 import com.echowalk.teamb.vlm.SceneDescribers
 
 /**
@@ -37,11 +41,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var frames: CameraXFrameProvider
     private lateinit var audio: AudioOutputManager
     private lateinit var modeManager: ModeManager
+    private lateinit var speechInput: SpeechInputController
 
     private lateinit var previewView: PreviewView
     private lateinit var statusText: TextView
     private lateinit var hudText: TextView
     private lateinit var describeButton: Button
+    private lateinit var findButton: Button
     private lateinit var ambientSwitch: Switch
     private lateinit var gestures: GestureDetector
 
@@ -49,6 +55,9 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startCamera() else statusText.text = "Camera permission denied"
         }
+
+    private val requestAudio =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> /* optional */ }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,23 +68,48 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         hudText = findViewById(R.id.hudText)
         describeButton = findViewById(R.id.describeButton)
+        findButton = findViewById(R.id.findButton)
         ambientSwitch = findViewById(R.id.ambientSwitch)
 
         frames = CameraXFrameProvider(this)
         audio = AudioOutputManager(this).also { it.init() }
+
+        // Team A: load depth + YOLO models onto Hexagon NPU (graceful null if assets missing).
+        val spatial = SpatialAudioEngine(audio)
+        val depthMod = try { TfliteQnnModule.loadAsset(this, "depth_anything_v2.tflite") }
+                       catch (t: Throwable) { Log.w(TAG, "depth model unavailable", t); null }
+        val yoloMod  = try { TfliteQnnModule.loadAsset(this, "yolov10_det.tflite") }
+                       catch (t: Throwable) { Log.w(TAG, "yolo model unavailable", t); null }
+        val labels   = try { assets.open("coco.names").bufferedReader().readLines().filter { it.isNotBlank() } }
+                       catch (_: Throwable) { emptyList() }
+        val radar = SafetyRadarController(frames, depthMod, yoloMod, spatial, labels)
+
         // VLM if `vlm.pte` is bundled, else classifier if `classifier.pte`+`labels.txt`, else Mock.
         val describer = SceneDescribers.create(this)
         modeManager = ModeManager(
             frames = frames,
-            radar = NoopSafetyRadar(),
+            radar = radar,
+            spatial = spatial,
             describer = describer,
             places = NoopPlaceNavigator(),
             audio = audio,
-            onStatus = ::onStatus, // may arrive off the main thread; marshalled below
+            onStatus = ::onStatus,
         )
+        speechInput = SpeechInputController(this, audio) { targetClass ->
+            modeManager.startFind(targetClass)
+        }
 
         describeButton.setOnClickListener { modeManager.describeScene() }
         describeButton.setOnLongClickListener { modeManager.repeatLast(); true }
+
+        // Find mode: hold to speak your query ("find the chair"), release to search.
+        findButton.setOnLongClickListener {
+            if (modeManager.isInFindMode) { modeManager.stopFind(); true }
+            else { speechInput.startListening(); true }
+        }
+        findButton.setOnClickListener {
+            if (modeManager.isInFindMode) modeManager.stopFind()
+        }
 
         // Eyes-free: tap anywhere on the preview to describe, double-tap to repeat.
         gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -99,6 +133,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (hasCameraPermission()) startCamera() else requestCamera.launch(Manifest.permission.CAMERA)
+        if (!hasAudioPermission()) requestAudio.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     private fun startCamera() {
@@ -120,6 +155,10 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
+    private fun hasAudioPermission() =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
     override fun onPause() {
         if (::modeManager.isInitialized) modeManager.stopAmbient()
         super.onPause()
@@ -136,6 +175,11 @@ class MainActivity : AppCompatActivity() {
         if (::modeManager.isInitialized) modeManager.stop()
         if (::frames.isInitialized) frames.shutdown()
         if (::audio.isInitialized) audio.shutdown()
+        if (::speechInput.isInitialized) speechInput.release()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }

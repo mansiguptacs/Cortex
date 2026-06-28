@@ -10,4 +10,7 @@ enum class AppMode {
 
     /** Team C learning walk (enrolling landmarks for a place). */
     ENROLLING,
+
+    /** Voice-commanded object search: YOLO continuously tracks a target class, guides user to it. */
+    FINDING,
 }
