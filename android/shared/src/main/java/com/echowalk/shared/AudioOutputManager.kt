@@ -50,9 +50,11 @@ class AudioOutputManager(context: Context) {
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.getDefault()
                 tts?.setOnUtteranceProgressListener(progressListener)
-                // Slightly slower than default for intelligibility of scene descriptions.
-                tts?.setSpeechRate(0.95f)
+                tts?.setSpeechRate(1.1f) // slightly faster = snappier for navigation alerts
                 ttsReady = true
+                // Warmup utterance — also greets the user on launch.
+                val id = "warmup-${System.nanoTime()}"
+                tts?.speak("Hello, welcome to Cortex app", TextToSpeech.QUEUE_FLUSH, null, id)
             }
         }
     }

@@ -33,17 +33,16 @@ dependencies {
     api("androidx.camera:camera-lifecycle:$cameraxVersion")
     api("androidx.camera:camera-view:$cameraxVersion")
 
-    // On-device inference: TensorFlow Lite + Qualcomm QNN delegate (HTP / NPU).
+    // Team A — On-device inference: TensorFlow Lite + Qualcomm QNN delegate (HTP / NPU).
     // - QnnDelegate Java API ships in the QAIRT SDK's qtld-release.aar; we vendor classes.jar
     //   here and put the matching .so files (libQnnTFLiteDelegate.so + libqnn_delegate_jni.so
     //   + libQnnHtp*.so) in :app/src/main/jniLibs/arm64-v8a/.
-    // - Stable TFLite Java API: no NDK required for app code.
     api("org.tensorflow:tensorflow-lite:2.16.1")
     api("org.tensorflow:tensorflow-lite-support:0.4.4")
     api(files("libs/qnn-tflite-delegate.jar"))
 
-    // ExecuTorch runtime + LlmModule. Prefer the QNN-enabled AAR from Jainil's handoff when present
-    // (includes libqnn_executorch_backend.so); otherwise fall back to Maven Central (CPU/XNNPACK only).
+    // Team B — ExecuTorch runtime + LlmModule. Prefer the QNN-enabled AAR from Jainil's handoff when
+    // present (includes libqnn_executorch_backend.so); else fall back to Maven Central (CPU/XNNPACK).
     val qnnAar = rootProject.file("libs/executorch-qnn.aar")
     if (qnnAar.exists()) {
         api(files(qnnAar))

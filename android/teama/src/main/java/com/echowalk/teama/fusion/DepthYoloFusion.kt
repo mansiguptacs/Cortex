@@ -45,20 +45,28 @@ class DepthYoloFusion(
         detections: List<Detection>,
         tsMs: Long,
     ): RadarState {
-        val hazards = ArrayList<Hazard>(detections.size + 1)
-        for (det in detections) {
-            if (det.score < minScore) continue
+        val filtered = nms(detections.filter { it.score >= minScore }, NMS_IOU_THRESHOLD)
+        val hazards = ArrayList<Hazard>(filtered.size + 1)
+        for (det in filtered) {
             val px0 = (det.x0 * depthW).toInt().coerceIn(0, depthW - 1)
             val py0 = (det.y0 * depthH).toInt().coerceIn(0, depthH - 1)
             val px1 = (det.x1 * depthW).toInt().coerceIn(px0 + 1, depthW)
             val py1 = (det.y1 * depthH).toInt().coerceIn(py0 + 1, depthH)
             val nearest = trimmedNearest(depth, depthW, px0, py0, px1, py1)
-            val azimuth = ((det.x0 + det.x1) * 0.5f - 0.5f) * HORIZONTAL_FOV_DEG
+            val azimuth   = ((det.x0 + det.x1) * 0.5f - 0.5f) * HORIZONTAL_FOV_DEG
+            val elevation = (0.5f - (det.y0 + det.y1) * 0.5f) * VERTICAL_FOV_DEG
+            val area      = (det.x1 - det.x0) * (det.y1 - det.y0)
             val kind = when {
                 det.cls in wallClasses -> HazardKind.WALL
                 else -> HazardKind.OBSTACLE
             }
-            hazards.add(Hazard(cls = det.cls, distanceM = nearest, azimuthDeg = azimuth, kind = kind))
+            hazards.add(Hazard(
+                cls = det.cls, distanceM = nearest,
+                azimuthDeg = azimuth, elevationDeg = elevation,
+                boxArea = area,
+                boxX0 = det.x0, boxY0 = det.y0, boxX1 = det.x1, boxY1 = det.y1,
+                kind = kind,
+            ))
         }
         // Drop-off check: large depth-drop near bottom-center vs immediate floor below the user.
         detectDropOff(depth, depthW, depthH)?.let { hazards.add(it) }
@@ -135,6 +143,32 @@ class DepthYoloFusion(
         return if (m == Float.NEGATIVE_INFINITY) 0f else m
     }
 
+    /** Greedy NMS: keep highest-score box, suppress others with IoU ≥ threshold (per class). */
+    private fun nms(dets: List<Detection>, iouThresh: Float): List<Detection> {
+        if (dets.size <= 1) return dets
+        val byClass = dets.groupBy { it.cls }
+        val result = ArrayList<Detection>(dets.size)
+        for ((_, group) in byClass) {
+            val sorted = group.sortedByDescending { it.score }.toMutableList()
+            while (sorted.isNotEmpty()) {
+                val best = sorted.removeAt(0)
+                result.add(best)
+                sorted.removeAll { iou(best, it) >= iouThresh }
+            }
+        }
+        return result
+    }
+
+    private fun iou(a: Detection, b: Detection): Float {
+        val ix0 = max(a.x0, b.x0); val iy0 = max(a.y0, b.y0)
+        val ix1 = min(a.x1, b.x1); val iy1 = min(a.y1, b.y1)
+        val inter = max(0f, ix1 - ix0) * max(0f, iy1 - iy0)
+        if (inter == 0f) return 0f
+        val aA = (a.x1 - a.x0) * (a.y1 - a.y0)
+        val bA = (b.x1 - b.x0) * (b.y1 - b.y0)
+        return inter / (aA + bA - inter)
+    }
+
     companion object {
         // Empirically-calibrate these in Phase 3.
         const val URGENT_REL_DEPTH = 9.0f
@@ -143,7 +177,12 @@ class DepthYoloFusion(
 
         // Approximate horizontal FOV of the S25 Ultra back camera in degrees (for stereo pan).
         const val HORIZONTAL_FOV_DEG = 78f
+        // Approximate vertical FOV (portrait orientation).
+        const val VERTICAL_FOV_DEG   = 58f
 
         val WALL_LIKE = setOf("wall", "door", "refrigerator", "bookshelf")
+
+        // IoU threshold for NMS — suppresses overlapping boxes of the same class.
+        private const val NMS_IOU_THRESHOLD = 0.45f
     }
 }

@@ -44,12 +44,16 @@ class SafetyRadarController(
     @Volatile var lastDetections: List<DepthYoloFusion.Detection> = emptyList()
         private set
 
-    private val inferExec = Executors.newSingleThreadExecutor { r ->
+    private var inferExec = newInferExecutor()
+
+    private fun newInferExecutor() = Executors.newSingleThreadExecutor { r ->
         Thread(r, "radar-infer").apply { priority = Thread.MAX_PRIORITY }
     }
 
     override fun start() {
         if (running) return
+        // Recreate executor if it was shut down by a previous destroy() call.
+        if (inferExec.isShutdown) inferExec = newInferExecutor()
         running = true
         frames.subscribe(frameListener)
     }
@@ -58,6 +62,13 @@ class SafetyRadarController(
         if (!running) return
         running = false
         frames.unsubscribe(frameListener)
+        // Do NOT shutdown inferExec here — stop/start cycles are used during scene describe.
+        // Call destroy() from onDestroy() for final cleanup.
+    }
+
+    /** Call once from Activity.onDestroy() to release the inference thread permanently. */
+    fun destroy() {
+        stop()
         inferExec.shutdown()
     }
 

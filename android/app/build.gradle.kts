@@ -34,9 +34,8 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    // Keep model/tokenizer assets uncompressed so ExecuTorch can mmap them.
     androidResources {
-        // Keep model/tokenizer assets uncompressed so ExecuTorch can mmap them and large .pte
-        // files don't bloat install-time decompression.
         noCompress += listOf("pte", "bin", "json", "model", "jinja")
     }
     packaging {
