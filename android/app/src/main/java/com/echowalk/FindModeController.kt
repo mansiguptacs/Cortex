@@ -145,16 +145,28 @@ class FindModeController(
         if (distanceWindow.size >= TREND_WINDOW) distanceWindow.removeFirst()
         distanceWindow.addLast(target.distanceM)
 
-        // Transition to REACH phase when target is close
-        if (target.distanceM >= NEAR_DEPTH && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
+        val centered = kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG
+
+        // Transition to REACH: depth threshold OR box area large enough (more reliable up close).
+        if (centered && (target.distanceM >= NEAR_DEPTH || target.boxArea >= BOX_AREA_REACH_ENTER)) {
             phase = Phase.REACH
-            audio.speak("Almost there — walk forward slowly.", flush = false)
+            val msg = when {
+                target.boxArea >= BOX_AREA_NEAR -> "Very close — slow down and reach out."
+                else -> "Almost there — walk forward slowly."
+            }
+            audio.speak(msg, flush = false)
             lastGuidanceMs = now
             return
         }
 
         if (now - lastGuidanceMs < GUIDANCE_RATE_MS) return
-        val phrase = buildCenteringPhrase(target.azimuthDeg, target.elevationDeg, target.distanceM)
+
+        // Proximity hint within NAVIGATE so user isn't left in the dark between directions.
+        val proximityHint = when {
+            target.boxArea >= BOX_AREA_APPROACHING -> " — getting close"
+            else -> ""
+        }
+        val phrase = buildCenteringPhrase(target.azimuthDeg, target.elevationDeg, target.distanceM) + proximityHint
         if (phrase == lastPhrase && now - lastGuidanceMs < REPEAT_SAME_RATE_MS) return
         lastGuidanceMs = now
         lastPhrase = phrase
@@ -172,7 +184,7 @@ class FindModeController(
                     lastElevationDeg > ELEV_TILT_THRESHOLD ->
                         "Tilt the phone up — the ${friendlyName(targetClass)} is above you."
                     else ->
-                        "The ${friendlyName(targetClass)} is very close — you can reach it now."
+                        "The ${friendlyName(targetClass)} is right here — reach out and grab it!"
                 }
                 audio.speak(tiltHint, flush = false)
                 onFound()
@@ -185,18 +197,29 @@ class FindModeController(
         lastSeenMs = now
         lastElevationDeg = target.elevationDeg
 
-        // Box-area proximity check: when the object fills enough of the frame → grab it.
+        // Three-tier grab detection by box area:
+        //  GRAB  (≥0.16): object fills a large portion of frame → arm reach distance
+        //  NEAR  (≥0.09): object sizeable in frame → slow down, about to reach
+        //  CLOSE (≥0.05): entered REACH but still some distance → careful guidance
         if (target.boxArea >= BOX_AREA_GRAB && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
-            audio.speak("You're very close — reach out and grab the ${friendlyName(targetClass)}!", flush = false)
+            audio.speak("Right here — reach out and grab the ${friendlyName(targetClass)}!", flush = false)
             onFound()
             return
         }
-        // Intermediate close hint (box approaching grab size)
         if (target.boxArea >= BOX_AREA_NEAR && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG
             && now - lastGuidanceMs > GUIDANCE_RATE_MS) {
-            audio.speak("Almost there — the ${friendlyName(targetClass)} is right in front of you.", flush = false)
+            audio.speak("Almost touching — slow down, the ${friendlyName(targetClass)} is right in front of you.", flush = false)
             lastGuidanceMs = now
-            lastPhrase = "almost"
+            lastPhrase = "near"
+            return
+        }
+        if (target.boxArea >= BOX_AREA_APPROACHING && now - lastGuidanceMs > GUIDANCE_RATE_MS) {
+            val phrase = buildReachPhrase(target.azimuthDeg, target.elevationDeg)
+            if (phrase != lastPhrase) {
+                audio.speak("Getting very close — $phrase", flush = false)
+                lastGuidanceMs = now
+                lastPhrase = phrase
+            }
             return
         }
 
@@ -306,12 +329,15 @@ class FindModeController(
 
     companion object {
         private const val AZ_THRESHOLD            = 20f
-        private const val ELEV_TILT_THRESHOLD      = 12f     // degrees — tilt guidance threshold
+        private const val ELEV_TILT_THRESHOLD      = 12f
         private const val FOUND_AZ_DEG            = 25f
-        private const val NEAR_DEPTH              = 6.5f    // transition NAVIGATE→REACH
-        private const val REACH_DEPTH             = 7.5f    // depth-based arrived threshold (backup)
-        private const val BOX_AREA_NEAR           = 0.12f   // ~35% width box → "almost there"
-        private const val BOX_AREA_GRAB           = 0.22f   // ~47% width box → "reach out and grab it"
+        private const val NEAR_DEPTH              = 6.5f    // depth-based NAVIGATE→REACH (backup)
+        /** Box area thresholds — more reliable than depth at close range.
+         *  Geometry: bottle (7cm wide) at 60cm ≈ 0.06, at 35cm ≈ 0.10, at 20cm ≈ 0.16. */
+        private const val BOX_AREA_APPROACHING    = 0.04f   // ~arm's length — "getting close" hint
+        private const val BOX_AREA_REACH_ENTER    = 0.06f   // NAVIGATE→REACH transition
+        private const val BOX_AREA_NEAR           = 0.09f   // "almost touching"
+        private const val BOX_AREA_GRAB           = 0.16f   // "right here — grab it!"
         private const val GUIDANCE_RATE_MS        = 1_200L
         private const val REPEAT_SAME_RATE_MS     = 3_000L
         private const val OBSTACLE_RATE_MS        = 5_000L  // don't re-warn same obstacle faster than this
