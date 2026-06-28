@@ -164,7 +164,9 @@ class ModeManager(
                 val modelText = withContext(Dispatchers.Default) { describer.describe(burst) }
                 val latencyMs = (System.nanoTime() - startNs) / 1_000_000
 
-                val text = if (modelText.isBlank() || modelText.contains("mock", ignoreCase = true)) {
+                // Use YOLO fallback when: no real model is loaded (engineLabel==MOCK),
+                // or the model returned blank/placeholder text.
+                val text = if (engineLabel == "MOCK" || modelText.isBlank()) {
                     buildYoloDescription()
                 } else {
                     modelText
@@ -282,6 +284,18 @@ class ModeManager(
         if (mode == AppMode.FINDING) stopFind()
         mode = AppMode.FINDING
         voiceWarning.reset()
+
+        // If this object was seen recently, hint the user immediately
+        val memory = ObjectMemory.recall(targetClass)
+        if (memory != null) {
+            val dir = when {
+                memory.azimuthDeg < -13f -> "on your left"
+                memory.azimuthDeg >  13f -> "on your right"
+                else -> "ahead"
+            }
+            audio.speak("Last seen $dir — scanning.", flush = false)
+        }
+
         findController = FindModeController(
             targetClass = targetClass,
             audio = audio,

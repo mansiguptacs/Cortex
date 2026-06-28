@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var audio: AudioOutputManager
     private lateinit var modeManager: ModeManager
     private lateinit var speechInput: SpeechInputController
+    private lateinit var radar: SafetyRadarController
 
     private lateinit var previewView: PreviewView
     private lateinit var statusText: TextView
@@ -83,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         val labels   = try { assets.open("coco.names").bufferedReader().readLines().filter { it.isNotBlank() } }
                        catch (_: Throwable) { emptyList() }
         val radar = SafetyRadarController(frames, depthMod, yoloMod, spatial, labels)
+        this.radar = radar
 
         // VLM if `vlm.pte` is bundled, else classifier if `classifier.pte`+`labels.txt`, else Mock.
         val describer = SceneDescribers.create(this)
@@ -173,6 +175,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (::modeManager.isInitialized) modeManager.stop()
+        if (::radar.isInitialized) radar.destroy()
         if (::frames.isInitialized) frames.shutdown()
         if (::audio.isInitialized) audio.shutdown()
         if (::speechInput.isInitialized) speechInput.release()
