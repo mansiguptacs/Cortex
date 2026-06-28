@@ -53,19 +53,49 @@ class SpatialAudioEngine(
         if (audio.isSpeaking()) return // duck under speech
         val now = System.currentTimeMillis()
 
-        // Per-zone cadence from zoneNearest (relative depth; bigger = closer).
+        // Depth-Anything-V2 returns per-frame normalized relative depth, so a single global
+        // threshold is unreliable — every frame contains "high" values somewhere. To avoid the
+        // constant-beep problem, a zone only beeps when it is clearly the *dominant* (closest)
+        // zone in the current frame. Hazards from YOLO/drop-off detector always beep.
         val zones = state.zoneNearestM
-        for (z in 0..2) {
-            val rel = if (zones[z].isFinite()) zones[z] else Float.NEGATIVE_INFINITY
-            val urgency = urgencyBand(rel) ?: continue
-            if (now < zoneNextDueMs[z]) continue
-            val pan = (z - 1).toFloat() // -1 left, 0 center, +1 right
-            playTone(kindIndexForZone(state, z), urgency, pan)
-            val cadenceMs = cadenceMsForUrgency(urgency)
-            zoneNextDueMs[z] = now + cadenceMs
+        val finiteZones = zones.filter { it.isFinite() }
+        val zoneMax = finiteZones.maxOrNull() ?: Float.NEGATIVE_INFINITY
+        val zoneMin = finiteZones.minOrNull() ?: Float.NEGATIVE_INFINITY
+        val zoneSpread = zoneMax - zoneMin
+
+        // Only consider a zone-only beep if there's meaningful directional contrast in the frame
+        // (one side noticeably closer than the others) AND the dominant zone is genuinely close.
+        val zoneSpeaks = zoneSpread >= ZONE_DOMINANCE_DELTA && zoneMax >= ZONE_MIN_TO_BEEP
+        if (zoneSpeaks) {
+            for (z in 0..2) {
+                val rel = if (zones[z].isFinite()) zones[z] else Float.NEGATIVE_INFINITY
+                // A zone is "dominant" if it's close to the frame max.
+                if (zoneMax - rel > ZONE_DOMINANCE_TOL) continue
+                val urgency = urgencyBand(rel) ?: continue
+                if (now < zoneNextDueMs[z]) continue
+                val pan = (z - 1).toFloat()
+                playTone(kindIndexForZone(state, z), urgency, pan)
+                zoneNextDueMs[z] = now + cadenceMsForUrgency(urgency)
+            }
         }
 
-        // Haptic on any imminent OBSTACLE / DROPOFF in the central zone.
+        // YOLO hazards / drop-offs always beep (they're semantic, not noisy).
+        for (h in state.hazards) {
+            if (h.kind == HazardKind.WALL) continue // walls handled by the zone path
+            val urgency = urgencyBand(h.distanceM) ?: 0
+            val zone = azimuthToZone(h.azimuthDeg)
+            if (now < zoneNextDueMs[zone]) continue
+            val pan = (h.azimuthDeg / (HALF_FOV_DEG)).coerceIn(-1f, 1f)
+            val kindIdx = when (h.kind) {
+                HazardKind.WALL -> 0
+                HazardKind.OBSTACLE -> 1
+                HazardKind.DROPOFF -> 2
+            }
+            playTone(kindIdx, urgency, pan)
+            zoneNextDueMs[zone] = now + cadenceMsForUrgency(urgency)
+        }
+
+        // Haptic on any imminent OBSTACLE / DROPOFF.
         val imminent = state.hazards.any {
             (it.kind == HazardKind.OBSTACLE || it.kind == HazardKind.DROPOFF) &&
                 urgencyBand(it.distanceM) == 2
@@ -74,6 +104,12 @@ class SpatialAudioEngine(
             audio.haptic(80)
             lastHapticMs = now
         }
+    }
+
+    private fun azimuthToZone(az: Float): Int = when {
+        az < -HALF_FOV_DEG / 3f -> 0
+        az > HALF_FOV_DEG / 3f -> 2
+        else -> 1
     }
 
     private fun kindIndexForZone(state: RadarState, zone: Int): Int {
@@ -91,10 +127,21 @@ class SpatialAudioEngine(
     }
 
     private fun urgencyBand(rel: Float): Int? = when {
-        rel >= 9.0f -> 2  // URGENT
-        rel >= 6.0f -> 1  // MID
-        rel >= 3.5f -> 0  // SOFT
+        rel >= 8.5f -> 2  // URGENT
+        rel >= 6.5f -> 1  // MID
+        rel >= 5.0f -> 0  // SOFT
         else -> null      // too far / no signal
+    }
+
+    private companion object {
+        // A zone must be at least this much closer than the farthest zone in the frame to beep.
+        const val ZONE_DOMINANCE_DELTA = 2.5f
+        // A "dominant" zone is one within this tolerance of the frame's nearest zone.
+        const val ZONE_DOMINANCE_TOL = 1.0f
+        // Even the closest zone won't beep if it isn't above this minimum.
+        const val ZONE_MIN_TO_BEEP = 6.5f
+        // Half the camera's horizontal field of view (matches DepthYoloFusion.HORIZONTAL_FOV_DEG).
+        const val HALF_FOV_DEG = 39f
     }
 
     private fun cadenceMsForUrgency(u: Int): Long = when (u) {
