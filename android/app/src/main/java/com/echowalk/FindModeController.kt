@@ -32,6 +32,8 @@ class FindModeController(
     private var lastElevationDeg = 0f  // last known vertical position of target
     private val announcedClasses = mutableSetOf<String>()
     private val distanceWindow = ArrayDeque<Float>(TREND_WINDOW)
+    private var lastObstacleMs = 0L        // rate-limit for path obstacle warnings
+    private val warnedObstacles = mutableSetOf<String>() // obstacles already warned this session
 
     fun process(state: RadarState) {
         if (audio.isSpeaking()) return
@@ -41,14 +43,54 @@ class FindModeController(
             .filter { it.cls == targetClass }
             .maxByOrNull { it.distanceM }
 
-        // Save last known azimuth for re-find memory
         if (target != null) ObjectMemory.update(targetClass, target.azimuthDeg)
 
         return when (phase) {
             Phase.SCAN     -> processScan(state, target, now)
-            Phase.NAVIGATE -> processNavigate(target, now)
+            Phase.NAVIGATE -> {
+                // Check path obstacles before navigation guidance — urgent obstacles first.
+                checkPathObstacles(state, target, now)
+                processNavigate(target, now)
+            }
             Phase.REACH    -> processReach(target, now)
         }
+    }
+
+    /**
+     * Warn about non-target objects that are in the forward path toward the target.
+     * "In path" = azimuth within PATH_CONE_DEG of the target's direction (or center if no target),
+     * and close enough to require a detour (distanceM ≥ OBSTACLE_WARN_DEPTH).
+     */
+    private fun checkPathObstacles(state: RadarState, target: com.echowalk.teama.Hazard?, now: Long) {
+        if (now - lastObstacleMs < OBSTACLE_RATE_MS) return
+
+        // Direction we're heading toward (target azimuth, or 0° if not yet visible)
+        val headingDeg = target?.azimuthDeg ?: 0f
+
+        val obstacle = state.hazards
+            .filter { h ->
+                h.cls != targetClass &&
+                h.kind != com.echowalk.teama.HazardKind.WALL &&
+                h.distanceM >= OBSTACLE_WARN_DEPTH &&
+                kotlin.math.abs(h.azimuthDeg - headingDeg) <= PATH_CONE_DEG &&
+                h.cls !in warnedObstacles
+            }
+            .maxByOrNull { it.distanceM } ?: return
+
+        // Also clear warned objects that are no longer in the path (moved or passed)
+        val currentPathClasses = state.hazards
+            .filter { h -> h.cls != targetClass && kotlin.math.abs(h.azimuthDeg - headingDeg) <= PATH_CONE_DEG }
+            .map { it.cls }.toSet()
+        warnedObstacles.retainAll(currentPathClasses)
+
+        val dir = when {
+            obstacle.azimuthDeg < -13f -> "on your left"
+            obstacle.azimuthDeg >  13f -> "on your right"
+            else -> "in your path"
+        }
+        warnedObstacles.add(obstacle.cls)
+        lastObstacleMs = now
+        audio.speak("Watch out — ${friendlyName(obstacle.cls)} $dir", flush = false)
     }
 
     // During SCAN: announce every new visible object; switch to NAVIGATE when target appears.
@@ -236,7 +278,9 @@ class FindModeController(
         lastSeenMs = 0L
         lastPhrase = ""
         lastElevationDeg = 0f
+        lastObstacleMs = 0L
         announcedClasses.clear()
+        warnedObstacles.clear()
         distanceWindow.clear()
     }
 
@@ -250,8 +294,11 @@ class FindModeController(
         private const val REACH_DEPTH             = 7.5f    // depth-based arrived threshold (backup)
         private const val BOX_AREA_NEAR           = 0.12f   // ~35% width box → "almost there"
         private const val BOX_AREA_GRAB           = 0.22f   // ~47% width box → "reach out and grab it"
-        private const val GUIDANCE_RATE_MS        = 1_200L  // faster feedback for centering
+        private const val GUIDANCE_RATE_MS        = 1_200L
         private const val REPEAT_SAME_RATE_MS     = 3_000L
+        private const val OBSTACLE_RATE_MS        = 5_000L  // don't re-warn same obstacle faster than this
+        private const val OBSTACLE_WARN_DEPTH     = 5.5f    // normalised depth — object is close enough to block
+        private const val PATH_CONE_DEG           = 28f     // ±28° from heading = "in the path"
         private const val LOST_TIMEOUT_MS         = 3_500L  // NAVIGATE: wait longer before "lost it"
         private const val REACH_LOST_GRACE_MS     = 4_000L  // REACH: if gone within 4s → declare found
         private const val AUTO_EXIT_MS            = 12_000L // longer grace before giving up
