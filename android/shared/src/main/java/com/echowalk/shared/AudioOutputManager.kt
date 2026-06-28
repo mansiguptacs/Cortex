@@ -1,6 +1,7 @@
 package com.echowalk.shared
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
@@ -24,6 +25,17 @@ class AudioOutputManager(context: Context) {
     private val appContext = context.applicationContext
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+
+    /**
+     * AudioAttributes for TTS output. Using USAGE_ASSISTANCE_ACCESSIBILITY routes through the
+     * accessibility audio stream which is independent of media volume — the user can silence music
+     * without silencing the navigation voice. This is set on the TTS engine via setAudioAttributes,
+     * NOT via KEY_PARAM_STREAM bundle (which crashes the TTS engine with non-standard stream IDs).
+     */
+    private val ttsAudioAttrs = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .build()
 
     private val vibrator: Vibrator? =
         appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
@@ -54,6 +66,7 @@ class AudioOutputManager(context: Context) {
                 tts?.language = Locale.getDefault()
                 tts?.setOnUtteranceProgressListener(progressListener)
                 tts?.setSpeechRate(1.1f)
+                tts?.setAudioAttributes(ttsAudioAttrs)
                 ttsReady = true
                 greet()
             }
