@@ -5,7 +5,8 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <!-- Shared camera preview (FrameProvider owns the CameraX session). -->
+    <!-- Shared camera preview (FrameProvider owns the CameraX session).
+         Tap anywhere to describe; double-tap (or long-press the button) to repeat. -->
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
         android:layout_width="0dp"
@@ -25,17 +26,49 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Demo HUD: active engine + last inference latency + top predictions. -->
     <TextView
-        android:id="@+id/statusText"
+        android:id="@+id/hudText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_margin="16dp"
+        android:layout_margin="10dp"
+        android:background="#99000000"
         android:padding="8dp"
-        android:background="#80000000"
-        android:textColor="#FFFFFF"
-        android:text="@string/status_idle"
+        android:fontFamily="monospace"
+        android:textColor="#FF66FF99"
+        android:textSize="13sp"
+        android:lineSpacingExtra="2dp"
+        android:text="HUD"
+        android:visibility="gone"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:padding="10dp"
+        android:background="#80000000"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:text="@string/status_idle"
+        app:layout_constraintBottom_toTopOf="@id/ambientSwitch"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <Switch
+        android:id="@+id/ambientSwitch"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:paddingVertical="8dp"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:text="Auto-describe (ambient)"
+        app:layout_constraintBottom_toTopOf="@id/describeButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
     <!-- Large, accessibility-friendly action button (Team B describe / hotkey alternative). -->
     <Button

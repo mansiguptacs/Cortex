@@ -1,36 +1,54 @@
-# SmolVLM on-device runtime — what's still needed (Team B → Jainil)
+# SmolVLM on-device runtime — status (Team B)
 
-The handoff zip (`vlm-handoff-*.zip`) contains **models + tokenizer only**. To execute the 3-part
-QNN SmolVLM on the S25, we also need the **QNN Android runtime** — which only the ExecuTorch+QNN
-build host (the one that produced the `.pte`) can provide. The public `executorch-android:0.6.0`
-AAR ships **CPU only** (`libexecutorch.so`); it has no QNN backend, so a QNN-delegated `.pte`
-won't even `load()` without the libs below.
+## ✅ Received (udit-full-handoff) and verified on the S25 (SM-S938U1 / SM8750)
 
-## Please provide (drop into `~/Downloads/qnn-android-runtime/`)
+The full handoff contains everything we previously lacked, all arch-verified:
 
-1. **`qnn_llama_runner`** (aarch64-android), built from
-   `executorch/examples/qualcomm/oss_scripts/llama` — **or** an `executorch.aar` built with
-   `-DEXECUTORCH_BUILD_QNN=ON` (so it bundles `LlmModule` + the QNN backend).
-2. **`libqnn_executorch_backend.so`** from that same ExecuTorch QNN build.
-3. **QNN SDK `.so` libs**, version-matched to the export:
-   - `libQnnHtp.so`, `libQnnHtpV79Stub.so`, `libQnnSystem.so`  (from `$QNN_SDK_ROOT/lib/aarch64-android/`)
-   - `libQnnHtpV79Skel.so`  (from `$QNN_SDK_ROOT/lib/hexagon-v79/unsigned/`)
-4. **QNN SDK / QAIRT version** used (e.g. 2.37.x) — must match the runtime.
-5. The **exact runner command** you validated with, plus confirmation you got a sane description,
-   and the **real image size + normalization** (IO_SPEC still lists these as TODO).
+- `bin/qnn_multimodal_runner` (aarch64) — the 3-PTE SmolVLM runner (the path we need)
+- `bin/qnn_llama_runner` (aarch64) — bonus
+- `jniLibs/arm64-v8a/`: `libQnnHtp.so`, `libQnnHtpV79Stub.so`, `libQnnSystem.so`,
+  `libqnn_executorch_backend.so`
+- `hexagon-v79/unsigned/libQnnHtpV79Skel.so` (Hexagon DSP6 / v79)
+- `executorch-qnn.aar` — `libexecutorch.so` + QNN backend + `LlmModule` classes (enables in-app QNN)
+- `assets/{vlm_encoder,vlm_text_embedding,vlm_decoder}.pte` + `assets/tokenizer/`
+
+Validated up to device init: runner runs, tokenizer loads, **`-decoder_model_version smolvlm`** is
+the correct value (the `kSmolvlm` path), and QNN reaches device creation.
+
+## ❌ ONE blocker — QNN version mismatch (one file from Jainil)
+
+The Hexagon skel is a different QAIRT version than the host libs:
+
+| Lib | Version |
+| --- | --- |
+| `libQnnHtp.so` | **2.46.0**.260424121129 |
+| `libQnnHtpV79Stub.so` | **2.46.0**.260424121129 |
+| `libQnnHtpV79Skel.so` (included) | **2.47.0**.260601114230 |
+
+Device init fails with:
+
+```
+QnnDsp <E> Skel lib id mismatch: expected (v2.46.0.260424121129), detected (v2.47.0.260601114230)
+QnnDsp <E> Failed to load skel, error: 1008
+```
+
+### Fix (pick one; option A is easiest)
+
+- **A.** Provide `libQnnHtpV79Skel.so` from **QAIRT 2.46.0** (same source as the host libs /
+  `aura_collaterals`). Drop it in `hexagon-v79/unsigned/`. Nothing else changes.
+- **B.** Provide **2.47.0** versions of `libQnnHtp.so`, `libQnnHtpV79Stub.so`, `libQnnSystem.so`
+  (and matching `libqnn_executorch_backend.so`) so the whole stack is 2.47.0 — only do this if the
+  `.pte` were actually exported against 2.47.0.
+
+Please also confirm which QAIRT version the three `.pte` were exported with, so we match A vs B.
 
 ## Then (validation, ~minutes)
 
 ```bash
-LIBS_DIR=~/Downloads/qnn-android-runtime \
-IMAGE=~/Downloads/test_room.jpg \
+HANDOFF=~/Downloads/udit-full-handoff \
+IMAGE=/sdcard/DCIM/Camera/<a-photo>.jpg \
 tools/run_smolvlm_device.sh
 ```
 
-This pushes models + tokenizer + runner + libs to `/data/local/tmp/echowalk` and runs one
-inference over adb — proving the NPU path before we wire JNI into the app.
-
-## Why not CPU?
-
-These `.pte` are QNN/HTP-delegated; there is no CPU fallback for them. A CPU demo needs a
-separate XNNPACK export (see `export_classifier_xnnpack.py` / the classifier hedge).
+This stages everything to `/data/local/tmp/echowalk` and runs one inference over adb, proving the
+NPU path before we wire JNI / the AAR into the app.
