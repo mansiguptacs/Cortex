@@ -41,4 +41,29 @@ class ClassificationTest {
         val p = Classification.softmax(floatArrayOf(1f, 2f, 3f))
         assertEquals(1.0f, p.sum(), 1e-5f)
     }
+
+    @Test fun `meanLogits averages element-wise`() {
+        val avg = Classification.meanLogits(
+            listOf(floatArrayOf(0f, 2f, 4f), floatArrayOf(2f, 2f, 8f)),
+        )
+        assertEquals(listOf(1f, 2f, 6f), avg.toList())
+    }
+
+    @Test fun `meanLogits tolerates empties`() {
+        assertTrue(Classification.meanLogits(emptyList()).isEmpty())
+        val avg = Classification.meanLogits(listOf(floatArrayOf(), floatArrayOf(4f, 6f)))
+        assertEquals(listOf(4f, 6f), avg.toList())
+    }
+
+    @Test fun `mergedTopTerms sums synonyms and ranks`() {
+        val sceneLabels = listOf("office cubicles", "office building", "corridor")
+        // Two office variants each strong; corridor weak. Merged office should dominate.
+        val scores = floatArrayOf(3f, 3f, 1f)
+        val merged = Classification.mergedTopTerms(
+            scores, sceneLabels, mapper = { if (it.startsWith("office")) "office" else it },
+            consider = 3, out = 2,
+        )
+        assertEquals("office", merged.first().label)
+        assertTrue("merged office prob should exceed any single class", merged.first().prob > 0.5f)
+    }
 }

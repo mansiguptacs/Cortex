@@ -33,6 +33,36 @@ object SceneNarration {
         }
     }
 
+    /** A scene guess: a friendly term ("office") + its [0,1] probability. */
+    data class ScenePrediction(val term: String, val prob: Float)
+
+    /**
+     * Confidence-aware scene sentence. Phrasing softens as the model gets less sure, which is both
+     * more honest and calmer for a user relying on it: certain -> "You're in a kitchen.";
+     * unsure -> "I'm not sure, but it might be a corridor." A confident runner-up adds a "maybe".
+     */
+    fun fromSceneRanked(
+        preds: List<ScenePrediction>,
+        highConf: Float = 0.50f,
+        midConf: Float = 0.25f,
+        lowConf: Float = 0.12f,
+        hedgeConf: Float = 0.15f,
+    ): String {
+        val top = preds.firstOrNull()?.takeIf { it.term.isNotBlank() }
+            ?: return "I can't quite tell what kind of space this is."
+        val a = withArticle(top.term)
+        val second = preds.getOrNull(1)?.takeIf { it.term.isNotBlank() && it.term != top.term }
+        return when {
+            top.prob >= highConf -> "You're in $a."
+            top.prob >= midConf ->
+                if (second != null && second.prob >= hedgeConf)
+                    "This looks like $a, maybe ${withArticle(second.term)}."
+                else "This looks like $a."
+            top.prob >= lowConf -> "I'm not sure, but it might be $a."
+            else -> "I can't quite tell what kind of space this is."
+        }
+    }
+
     private fun withArticle(label: String): String {
         if (label.isEmpty()) return label
         val article = if (label.first().lowercaseChar() in "aeiou") "an" else "a"

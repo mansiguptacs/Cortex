@@ -1,6 +1,7 @@
 package com.echowalk.teamb.vlm
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
 import com.echowalk.shared.AssetModels
 import com.echowalk.shared.EtModule
@@ -9,6 +10,7 @@ import com.echowalk.shared.Frame
 import com.echowalk.teamb.MockSceneDescriber
 import com.echowalk.teamb.SceneDescriber
 import com.echowalk.teamb.narration.SceneNarration
+import com.echowalk.teamb.narration.SceneVocabulary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -36,31 +38,55 @@ class ClassifierSceneDescriber private constructor(
 
     override fun lastTopK(): List<LabelScore> = lastTopK
 
-    override suspend fun describe(frame: Frame): String = withContext(Dispatchers.Default) {
+    override suspend fun describe(frame: Frame): String = describe(listOf(frame))
+
+    /** Temporal voting: average logits over the burst, then narrate the merged result. */
+    override suspend fun describe(frames: List<Frame>): String = withContext(Dispatchers.Default) {
         try {
-            val input = VlmPreprocess.toCHW(
-                frame.rgb,
-                size = INPUT_SIZE,
-                mean = VlmPreprocess.IMAGENET_MEAN,
-                std = VlmPreprocess.IMAGENET_STD,
-            )
-            val logits = module.forward(input, intArrayOf(1, 3, INPUT_SIZE, INPUT_SIZE)).firstOrNull()
-                ?: return@withContext fallback.describe(frame)
-            val scored = Classification.scoredTopK(logits, labels, k = TOP_K)
-            lastTopK = scored
-            if (sceneMode) {
-                // Always speak the best scene; add a hedge only if the runner-up is plausible.
-                val tags = buildList {
-                    scored.getOrNull(0)?.let { add(it.label) }
-                    scored.getOrNull(1)?.takeIf { it.prob >= SCENE_SECOND_MIN }?.let { add(it.label) }
-                }
-                SceneNarration.fromScene(tags)
-            } else {
-                SceneNarration.fromTags(Classification.toPhrases(logits, labels, k = TOP_K))
-            }
+            val perFrame = frames.mapNotNull { forwardLogits(it.rgb) }
+            if (perFrame.isEmpty()) return@withContext fallback.describe(frames.last())
+            narrate(Classification.meanLogits(perFrame))
         } catch (t: Throwable) {
             Log.e(TAG, "Classifier inference failed; using fallback", t)
-            fallback.describe(frame)
+            fallback.describe(frames.last())
+        }
+    }
+
+    override suspend fun warmUp(): Unit = withContext(Dispatchers.Default) {
+        try {
+            val bmp = Bitmap.createBitmap(INPUT_SIZE, INPUT_SIZE, Bitmap.Config.ARGB_8888)
+            forwardLogits(bmp)
+            bmp.recycle()
+            Log.i(TAG, "Warm-up forward complete (engine=$engine)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Warm-up failed (non-fatal)", t)
+        }
+        Unit
+    }
+
+    private fun forwardLogits(bitmap: Bitmap): FloatArray? {
+        val input = VlmPreprocess.toCHW(
+            bitmap,
+            size = INPUT_SIZE,
+            mean = VlmPreprocess.IMAGENET_MEAN,
+            std = VlmPreprocess.IMAGENET_STD,
+        )
+        return module.forward(input, intArrayOf(1, 3, INPUT_SIZE, INPUT_SIZE)).firstOrNull()
+    }
+
+    private fun narrate(logits: FloatArray): String {
+        if (logits.isEmpty()) return SceneNarration.fromTags(emptyList())
+        return if (sceneMode) {
+            val merged = Classification.mergedTopTerms(
+                logits, labels, SceneVocabulary::friendly, consider = CONSIDER, out = TOP_K,
+            )
+            lastTopK = merged
+            SceneNarration.fromSceneRanked(
+                merged.map { SceneNarration.ScenePrediction(it.label, it.prob) },
+            )
+        } else {
+            lastTopK = Classification.scoredTopK(logits, labels, k = TOP_K)
+            SceneNarration.fromTags(Classification.toPhrases(logits, labels, k = TOP_K))
         }
     }
 
@@ -74,8 +100,8 @@ class ClassifierSceneDescriber private constructor(
         private const val INPUT_SIZE = 224
         private const val TOP_K = 3
 
-        /** Min softmax prob for the *second* scene guess before we voice the "possibly ..." hedge. */
-        private const val SCENE_SECOND_MIN = 0.15f
+        /** How many raw classes to fold into the friendly-term merge before ranking. */
+        private const val CONSIDER = 12
 
         /** Build the classifier describer if `classifier.pte` + `labels.txt` are bundled, else [fallback]. */
         fun create(

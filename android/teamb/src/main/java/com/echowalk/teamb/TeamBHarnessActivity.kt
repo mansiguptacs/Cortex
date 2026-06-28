@@ -1,10 +1,13 @@
 package com.echowalk.teamb
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.view.GestureDetector
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.ImageView
@@ -15,11 +18,13 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.echowalk.shared.AudioOutputManager
+import com.echowalk.shared.Frame
 import com.echowalk.shared.camera.CameraXFrameProvider
 import com.echowalk.teamb.vlm.FrameQuality
 import com.echowalk.teamb.vlm.SceneDescribers
 import com.echowalk.teamb.vlm.SceneDiagnostics
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -54,21 +59,25 @@ class TeamBHarnessActivity : AppCompatActivity() {
     private var lastDescription: String? = null
 
     private lateinit var previewView: PreviewView
+    private lateinit var previewFrame: View
     private lateinit var capturedThumb: ImageView
     private lateinit var statusText: TextView
     private lateinit var describeButton: Button
     private lateinit var hudText: TextView
+    private lateinit var gestures: GestureDetector
 
     private val requestCamera =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) startCamera() else statusText.text = "Camera permission denied"
         }
 
+    @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_teamb_harness)
 
         previewView = findViewById(R.id.previewView)
+        previewFrame = findViewById(R.id.previewFrame)
         capturedThumb = findViewById(R.id.capturedThumb)
         statusText = findViewById(R.id.statusText)
         describeButton = findViewById(R.id.describeButton)
@@ -76,11 +85,20 @@ class TeamBHarnessActivity : AppCompatActivity() {
         describeButton.setOnClickListener { onDescribe() }
         describeButton.setOnLongClickListener { onRepeat(); true } // long-press = repeat last
 
+        // Eyes-free: tap anywhere on the preview to describe, double-tap to repeat.
+        gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean { onDescribe(); return true }
+            override fun onDoubleTap(e: MotionEvent): Boolean { onRepeat(); return true }
+        })
+        previewFrame.setOnTouchListener { _, ev -> gestures.onTouchEvent(ev); true }
+
         frames = CameraXFrameProvider(this)
         audio = AudioOutputManager(this).also { it.init() }
         // VLM if `vlm.pte` is bundled, else classifier if `classifier.pte`+`labels.txt`, else Mock.
         describer = SceneDescribers.create(this)
         engineLabel = SceneDescribers.engineLabel(describer)
+        // Warm the model so the first real describe isn't slow (no-op for Mock).
+        lifecycleScope.launch { describer.warmUp() }
 
         if (hasCameraPermission()) startCamera() else requestCamera.launch(Manifest.permission.CAMERA)
     }
@@ -96,17 +114,20 @@ class TeamBHarnessActivity : AppCompatActivity() {
         // Ignore taps unless idle — the state machine owns the button, but guard anyway.
         if (state != UiState.READY) return
 
-        val frame = frames.latest()
-        if (frame == null) {
+        val first = frames.latest()
+        if (first == null) {
+            audio.cueError()
             statusText.text = "No frame yet - give the camera a moment"
             return
         }
         setState(UiState.CAPTURING)
-        capturedThumb.setImageBitmap(frame.rgb)
+        audio.cueCapture()
+        capturedThumb.setImageBitmap(first.rgb)
 
         lifecycleScope.launch {
             // A blind user can't see a covered lens / dark room — say so instead of describing black.
-            if (isFrameTooDark(frame.rgb)) {
+            if (isFrameTooDark(first.rgb)) {
+                audio.cueError()
                 val hint = "It's too dark to see clearly. Point the camera at the room or uncover the lens."
                 setState(UiState.SPEAKING, detail = hint)
                 speakAndAwait(hint)
@@ -115,13 +136,17 @@ class TeamBHarnessActivity : AppCompatActivity() {
             }
 
             setState(UiState.THINKING)
+            audio.cueThinking()
+            // Temporal voting: sample a short burst so one odd frame can't decide the answer.
+            val burst = captureBurst().ifEmpty { listOf(first) }
             // Keep inference off the UI thread; the real VLM/classifier pass is CPU/NPU heavy.
             val startNs = System.nanoTime()
-            val text = withContext(Dispatchers.Default) { describer.describe(frame) }
+            val text = withContext(Dispatchers.Default) { describer.describe(burst) }
             val latencyMs = (System.nanoTime() - startNs) / 1_000_000
 
             lastDescription = text
             renderHud(latencyMs)
+            audio.cueDone()
             setState(UiState.SPEAKING, detail = text)
             speakAndAwait(text)
 
@@ -129,14 +154,31 @@ class TeamBHarnessActivity : AppCompatActivity() {
         }
     }
 
-    /** Long-press: replay the last description without re-running inference (easy to miss the speech). */
+    /** Sample a few distinct recent frames over a short window for temporal voting. */
+    private suspend fun captureBurst(count: Int = BURST_COUNT, gapMs: Long = BURST_GAP_MS): List<Frame> {
+        val out = ArrayList<Frame>(count)
+        var lastTs = -1L
+        repeat(count) { i ->
+            frames.latest()?.let { f ->
+                if (f.tsMs != lastTs) { out.add(f); lastTs = f.tsMs }
+            }
+            if (i < count - 1) delay(gapMs)
+        }
+        return out
+    }
+
+    /** Long-press / double-tap: replay the last description without re-running inference. */
     private fun onRepeat() {
         if (state != UiState.READY) return
         val last = lastDescription
-        val text = last ?: "Nothing has been described yet. Tap Describe first."
+        if (last == null) {
+            audio.cueError()
+            statusText.text = "Nothing described yet - tap the preview first."
+            return
+        }
         lifecycleScope.launch {
-            setState(UiState.SPEAKING, detail = text)
-            speakAndAwait(text)
+            setState(UiState.SPEAKING, detail = last)
+            speakAndAwait(last)
             setState(UiState.READY)
         }
     }
@@ -169,7 +211,8 @@ class TeamBHarnessActivity : AppCompatActivity() {
         describeButton.isEnabled = next == UiState.READY
         statusText.text = when {
             detail != null -> detail
-            next == UiState.READY -> "${next.label}  [$engineLabel]"
+            // Keep the last description on screen as a caption when idle, not just "Ready".
+            next == UiState.READY -> lastDescription ?: "Tap the preview or press volume  [$engineLabel]"
             else -> next.label
         }
     }
@@ -208,5 +251,10 @@ class TeamBHarnessActivity : AppCompatActivity() {
         if (::frames.isInitialized) frames.shutdown()
         if (::audio.isInitialized) audio.shutdown()
         super.onDestroy()
+    }
+
+    private companion object {
+        const val BURST_COUNT = 4      // frames sampled per describe for temporal voting
+        const val BURST_GAP_MS = 70L   // spacing between samples (~210ms total window)
     }
 }

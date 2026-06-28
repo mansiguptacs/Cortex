@@ -45,6 +45,52 @@ object Classification {
         return "$article $label"
     }
 
+    /**
+     * Element-wise mean of several logit vectors (one per frame) for temporal voting. Averaging
+     * logits across a short burst suppresses one-off misfires (a single blurry/odd frame) and makes
+     * the resulting confidence far more trustworthy. Ignores empty/mismatched vectors.
+     */
+    fun meanLogits(perFrame: List<FloatArray>): FloatArray {
+        val valid = perFrame.filter { it.isNotEmpty() }
+        if (valid.isEmpty()) return FloatArray(0)
+        val n = valid.first().size
+        val sum = DoubleArray(n)
+        var count = 0
+        for (v in valid) {
+            if (v.size != n) continue
+            for (i in 0 until n) sum[i] = sum[i] + v[i].toDouble()
+            count++
+        }
+        if (count == 0) return FloatArray(0)
+        return FloatArray(n) { (sum[it] / count).toFloat() }
+    }
+
+    /**
+     * Merge per-class probabilities into a friendly-term ranking: synonyms that [mapper] sends to the
+     * same term have their probabilities summed (mutually-exclusive classes), so "office" beats a
+     * field split across "office"/"office cubicles". Returns merged terms, most probable first.
+     */
+    fun mergedTopTerms(
+        scores: FloatArray,
+        labels: List<String>,
+        mapper: (String) -> String,
+        consider: Int = 12,
+        out: Int = 3,
+    ): List<LabelScore> {
+        if (scores.isEmpty()) return emptyList()
+        val probs = softmax(scores)
+        val byTerm = LinkedHashMap<String, Float>()
+        for (idx in topK(scores, consider)) {
+            val label = labels.getOrNull(idx) ?: continue
+            val term = mapper(cleanLabel(label))
+            byTerm[term] = (byTerm[term] ?: 0f) + probs.getOrElse(idx) { 0f }
+        }
+        return byTerm.entries
+            .sortedByDescending { it.value }
+            .take(out)
+            .map { LabelScore(it.key, it.value) }
+    }
+
     fun softmax(scores: FloatArray): FloatArray {
         if (scores.isEmpty()) return scores
         val max = scores.max()

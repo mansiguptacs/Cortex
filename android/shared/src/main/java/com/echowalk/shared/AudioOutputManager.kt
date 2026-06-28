@@ -1,6 +1,8 @@
 package com.echowalk.shared
 
 import android.content.Context
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -26,6 +28,9 @@ class AudioOutputManager(context: Context) {
     private val vibrator: Vibrator? =
         appContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
 
+    /** Short non-speech "earcons" so a blind user knows what's happening without looking. */
+    private var tones: ToneGenerator? = null
+
     @Volatile
     private var speaking = false
 
@@ -36,6 +41,11 @@ class AudioOutputManager(context: Context) {
     fun isSpeaking(): Boolean = speaking
 
     fun init() {
+        tones = try {
+            ToneGenerator(AudioManager.STREAM_MUSIC, 70)
+        } catch (t: Throwable) {
+            null // some devices throw if audio is busy; cues degrade to haptics only
+        }
         tts = TextToSpeech(appContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.getDefault()
@@ -87,6 +97,36 @@ class AudioOutputManager(context: Context) {
         tts?.speak(text, mode, null, id)
     }
 
+    // --- Earcons: tiny audio cues paired with light haptics, for eyes-free state feedback. ---
+
+    /** Frame captured: crisp shutter-like blip + tick. */
+    fun cueCapture() {
+        tone(ToneGenerator.TONE_PROP_BEEP, 90)
+        haptic(20, lightAmplitude())
+    }
+
+    /** Working on it: a soft, unobtrusive blip so silence doesn't feel like a freeze. */
+    fun cueThinking() = tone(ToneGenerator.TONE_PROP_BEEP2, 60)
+
+    /** Result ready: a pleasant confirmation just before speech starts. */
+    fun cueDone() = tone(ToneGenerator.TONE_PROP_ACK, 120)
+
+    /** Something went wrong / nothing to do: low error tone + a firmer buzz. */
+    fun cueError() {
+        tone(ToneGenerator.TONE_SUP_ERROR, 180)
+        haptic(120)
+    }
+
+    private fun tone(type: Int, ms: Int) {
+        try {
+            tones?.startTone(type, ms)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun lightAmplitude(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 80 else VibrationEffect.DEFAULT_AMPLITUDE
+
     /** Short haptic pulse for hazard alerts (Team A). */
     fun haptic(durationMs: Long = 60, amplitude: Int = VibrationEffect.DEFAULT_AMPLITUDE) {
         val v = vibrator ?: return
@@ -102,6 +142,8 @@ class AudioOutputManager(context: Context) {
         tts?.stop()
         tts?.shutdown()
         tts = null
+        tones?.release()
+        tones = null
         speaking = false
         doneCallbacks.clear()
     }
