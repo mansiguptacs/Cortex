@@ -52,12 +52,18 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private val placeId = "demo"
 
     private lateinit var logView: TextView
+    private lateinit var statusView: TextView
     private lateinit var labelField: EditText
 
     private val embedder = DownsampleEmbedder(grid = 16)
     private val gate = RateGate.hz(2.0)
+    // rank() ignores its threshold; used only to surface the live best-match score for tuning.
+    private val diagMatcher = CosineMatcher(threshold = 0f)
     private lateinit var store: FilePlaceStore
     private lateinit var navigator: FamiliarPlacesNavigator
+
+    @Volatile private var threshold = DEFAULT_THRESHOLD
+    @Volatile private var phase = "idle"
 
     private val work = Executors.newSingleThreadExecutor()
     private val analysisExec = Executors.newSingleThreadExecutor()
@@ -95,7 +101,7 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun buildNavigator(): FamiliarPlacesNavigator =
         FamiliarPlacesNavigator(
             store = store,
-            matcher = CosineMatcher(threshold = 0.55f), // tuned live from the logged scores
+            matcher = CosineMatcher(threshold = threshold), // tunable live via Thr -/Thr +
             framesPerLandmark = 5,
             confirmTicks = 3,
         ).also { nav ->
@@ -109,6 +115,13 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 24, 24, 24)
         }
+
+        statusView = TextView(this).apply {
+            textSize = 13f
+            setTypeface(android.graphics.Typeface.MONOSPACE)
+            text = "phase=idle  thr=${"%.2f".format(threshold)}  best=—  frames=0  landmarks=0"
+        }
+        root.addView(statusView)
 
         labelField = EditText(this).apply {
             hint = "landmark / destination label (e.g. desk)"
@@ -130,6 +143,8 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row3.addView(button("List Dest") { onList() })
         row3.addView(button("Clear DB") { onClear() })
+        row3.addView(button("Thr -") { onThreshold(-THRESHOLD_STEP) })
+        row3.addView(button("Thr +") { onThreshold(+THRESHOLD_STEP) })
         root.addView(row3)
 
         logView = TextView(this).apply {
@@ -160,6 +175,7 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun onEnrollStart() = work.execute {
         navigator.enrollStart(placeId, "Demo")
+        phase = "enrolling"
         log("ENROLL started for '$placeId'. Aim at a landmark, hold ~2s, then Add Landmark.")
     }
 
@@ -177,12 +193,14 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun onEnrollStop() = work.execute {
         navigator.enrollStop()
+        phase = "idle"
         log("ENROLL stopped. Tap Activate to localize.")
     }
 
     private fun onActivate() = work.execute {
         try {
             navigator.activatePlace(placeId)
+            phase = "active"
             log("ACTIVE. Destinations: ${navigator.listDestinations()}")
         } catch (e: Exception) {
             log("Activate failed: ${e.message}")
@@ -214,7 +232,33 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun onClear() = work.execute {
         store.clear()
         navigator = buildNavigator()
+        phase = "idle"
+        frameCount = 0
         log("DB cleared. Fresh navigator.")
+        refreshStatus(null)
+    }
+
+    /**
+     * Rebuild the navigator with a new [threshold] (the matcher is immutable). Tuning is a
+     * localization concern, so we re-activate afterwards if we were active; an in-progress
+     * enrollment is reset (threshold doesn't affect enrollment anyway).
+     */
+    private fun onThreshold(delta: Float) = work.execute {
+        threshold = (threshold + delta).coerceIn(0f, 1f)
+        val wasActive = phase == "active"
+        navigator = buildNavigator()
+        if (wasActive) {
+            try {
+                navigator.activatePlace(placeId)
+                phase = "active"
+            } catch (_: Exception) {
+                phase = "idle"
+            }
+        } else {
+            phase = "idle"
+        }
+        log("threshold -> ${"%.2f".format(threshold)} (navigator rebuilt)")
+        refreshStatus(null)
     }
 
     // ---- Camera -> embedding -> navigator -----------------------------------
@@ -244,7 +288,10 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val gray = grayscaleFromYPlane(image)
             val emb = embedder.embed(gray, image.width, image.height)
             frameCount++
-            work.execute { navigator.onEmbedding(emb) }
+            work.execute {
+                navigator.onEmbedding(emb)
+                refreshStatus(emb)
+            }
         } catch (e: Exception) {
             Log.e("Harness", "analyze error", e)
         } finally {
@@ -314,10 +361,39 @@ class HarnessActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
 
+    /**
+     * Live cosine-score HUD. Ranks the current embedding against all stored landmarks and shows
+     * the top match EVEN WHEN it is below threshold (which the cue log never reveals, since those
+     * ticks stay silent). This is the empirical signal for picking the threshold (plan M-C0).
+     * Runs on the [work] thread so all store access stays serialized.
+     */
+    private fun refreshStatus(emb: FloatArray?) {
+        val landmarks = store.landmarks(placeId)
+        val top = if (emb != null && landmarks.isNotEmpty()) {
+            diagMatcher.rank(emb, landmarks).firstOrNull()
+        } else {
+            null
+        }
+        val bestStr = top?.let { "${it.label} ${"%.2f".format(it.score)}" } ?: "—"
+        val gateStr = when {
+            top == null -> ""
+            top.score >= threshold -> " MATCH"
+            else -> " silent"
+        }
+        val line = "phase=$phase  thr=${"%.2f".format(threshold)}  " +
+            "best=$bestStr$gateStr  frames=$frameCount  landmarks=${landmarks.size}"
+        runOnUiThread { statusView.text = line }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         tts?.shutdown()
         work.shutdown()
         analysisExec.shutdown()
+    }
+
+    companion object {
+        private const val DEFAULT_THRESHOLD = 0.55f
+        private const val THRESHOLD_STEP = 0.05f
     }
 }
