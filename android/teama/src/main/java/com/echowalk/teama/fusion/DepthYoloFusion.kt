@@ -45,9 +45,9 @@ class DepthYoloFusion(
         detections: List<Detection>,
         tsMs: Long,
     ): RadarState {
-        val hazards = ArrayList<Hazard>(detections.size + 1)
-        for (det in detections) {
-            if (det.score < minScore) continue
+        val filtered = nms(detections.filter { it.score >= minScore }, NMS_IOU_THRESHOLD)
+        val hazards = ArrayList<Hazard>(filtered.size + 1)
+        for (det in filtered) {
             val px0 = (det.x0 * depthW).toInt().coerceIn(0, depthW - 1)
             val py0 = (det.y0 * depthH).toInt().coerceIn(0, depthH - 1)
             val px1 = (det.x1 * depthW).toInt().coerceIn(px0 + 1, depthW)
@@ -135,6 +135,32 @@ class DepthYoloFusion(
         return if (m == Float.NEGATIVE_INFINITY) 0f else m
     }
 
+    /** Greedy NMS: keep highest-score box, suppress others with IoU ≥ threshold (per class). */
+    private fun nms(dets: List<Detection>, iouThresh: Float): List<Detection> {
+        if (dets.size <= 1) return dets
+        val byClass = dets.groupBy { it.cls }
+        val result = ArrayList<Detection>(dets.size)
+        for ((_, group) in byClass) {
+            val sorted = group.sortedByDescending { it.score }.toMutableList()
+            while (sorted.isNotEmpty()) {
+                val best = sorted.removeAt(0)
+                result.add(best)
+                sorted.removeAll { iou(best, it) >= iouThresh }
+            }
+        }
+        return result
+    }
+
+    private fun iou(a: Detection, b: Detection): Float {
+        val ix0 = max(a.x0, b.x0); val iy0 = max(a.y0, b.y0)
+        val ix1 = min(a.x1, b.x1); val iy1 = min(a.y1, b.y1)
+        val inter = max(0f, ix1 - ix0) * max(0f, iy1 - iy0)
+        if (inter == 0f) return 0f
+        val aA = (a.x1 - a.x0) * (a.y1 - a.y0)
+        val bA = (b.x1 - b.x0) * (b.y1 - b.y0)
+        return inter / (aA + bA - inter)
+    }
+
     companion object {
         // Empirically-calibrate these in Phase 3.
         const val URGENT_REL_DEPTH = 9.0f
@@ -145,5 +171,8 @@ class DepthYoloFusion(
         const val HORIZONTAL_FOV_DEG = 78f
 
         val WALL_LIKE = setOf("wall", "door", "refrigerator", "bookshelf")
+
+        // IoU threshold for NMS — suppresses overlapping boxes of the same class.
+        private const val NMS_IOU_THRESHOLD = 0.45f
     }
 }
