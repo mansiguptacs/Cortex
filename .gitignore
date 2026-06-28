@@ -2,8 +2,9 @@
 .gradle/
 android/.gradle/
 android/build/
-android/app/build/
+android/**/build/
 android/local.properties
+.idea/
 android/.idea/
 *.iml
 .DS_Store
@@ -31,6 +32,13 @@ ml/teama/_artifacts/
 ml/teamb/_artifacts/
 ml/teamc/_artifacts/
 
+# Team B local artifacts (not committed)
+ml/teamb/models/
+ml/teamb/exports/
+ml/teamb/handoff/
+ml/teamb/cache/
+ml/teamb/.cache/
+
 # Build outputs
 android/.gradle/
 android/**/build/
@@ -43,3 +51,4 @@ android/gradlew.bat
 .claude/
 .cursor/
 yolov10n.pt
+donotcheckin/

@@ -1,7 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
-        <!-- Team B isolation harness; merged into the app. Launch via adb. -->
-        <activity android:name=".TeamBHarnessActivity" android:exported="false" />
+        <!--
+          Team B isolation harness. It has its own LAUNCHER icon ("EchoWalk Team B") so you can
+          test it with NO adb / command line: just Run the app from Android Studio, then tap the
+          "EchoWalk Team B" icon on the phone. (The main app keeps its own "EchoWalk" icon.)
+        -->
+        <activity
+            android:name=".TeamBHarnessActivity"
+            android:exported="true"
+            android:label="EchoWalk Team B"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
