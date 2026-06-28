@@ -54,6 +54,8 @@ class ModeManager(
     private val onStatus: (Status) -> Unit = {},
     /** Optional secondary observer — receives every RadarState for overlay/debug use. */
     val onRadarStateExtra: ((RadarState) -> Unit)? = null,
+    /** Persistent place memory — null disables spatial recall. */
+    private val spatialMemory: SpatialMemory? = null,
 ) {
     enum class Phase { READY, CAPTURING, THINKING, SPEAKING }
 
@@ -72,6 +74,17 @@ class ModeManager(
     private val engineLabel = SceneDescribers.engineLabel(describer)
     private val voiceWarning = VoiceWarningEngine(audio)
     private var findController: FindModeController? = null
+
+    /** Room recognizer — active only when spatialMemory is provided. */
+    private val roomRecognizer: RoomRecognizer? = spatialMemory?.let {
+        RoomRecognizer(it) { recalls ->
+            // "Familiar area" callback — called from whatever thread process() ran on.
+            scope.launch {
+                if (audio.isSpeaking()) return@launch
+                audio.speak("Familiar area.", flush = false)
+            }
+        }
+    }
 
     @Volatile
     var mode: AppMode = AppMode.NAVIGATING
@@ -109,6 +122,7 @@ class ModeManager(
         // Here we layer the slow semantic channels on top.
         if (mode == AppMode.NAVIGATING || mode == AppMode.FINDING) {
             voiceWarning.process(state, safetyOnlyMode = mode == AppMode.FINDING)
+            roomRecognizer?.process(state)
         }
         if (mode == AppMode.FINDING) {
             findController?.process(state)
@@ -286,16 +300,21 @@ class ModeManager(
         if (mode == AppMode.FINDING) stopFind()
         mode = AppMode.FINDING
         voiceWarning.reset()
+        roomRecognizer?.flush()
 
-        // If this object was seen recently, hint the user immediately
-        val memory = ObjectMemory.recall(targetClass)
-        if (memory != null) {
+        // Check in-session ObjectMemory first, then cross-session SpatialMemory.
+        val sessionBearing = ObjectMemory.recall(targetClass)?.azimuthDeg
+        val persistentBearing = if (sessionBearing == null) spatialMemory?.lastKnownBearing(targetClass) else null
+        val knownBearing = sessionBearing ?: persistentBearing
+
+        if (knownBearing != null) {
             val dir = when {
-                memory.azimuthDeg < -13f -> "on your left"
-                memory.azimuthDeg >  13f -> "on your right"
+                knownBearing < -13f -> "on your left"
+                knownBearing >  13f -> "on your right"
                 else -> "ahead"
             }
-            audio.speak("Last seen $dir — scanning.", flush = false)
+            val prefix = if (persistentBearing != null) "Previously seen $dir" else "Last seen $dir"
+            audio.speak("$prefix — scanning.", flush = false)
         }
 
         findController = FindModeController(

@@ -109,6 +109,7 @@ class MainActivity : AppCompatActivity() {
         var currentFindTarget: String? = null
 
         val describer = SceneDescribers.create(this)
+        val spatialMemory = SpatialMemory(applicationContext)
         modeManager = ModeManager(
             frames = frames,
             radar = radar,
@@ -117,6 +118,7 @@ class MainActivity : AppCompatActivity() {
             places = NoopPlaceNavigator(),
             audio = audio,
             onStatus = ::onStatus,
+            spatialMemory = spatialMemory,
             onRadarStateExtra = { state ->
                 // Update bounding box overlay on every radar tick.
                 val target = currentFindTarget
