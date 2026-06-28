@@ -108,6 +108,20 @@ class MainActivity : AppCompatActivity() {
 
         var currentFindTarget: String? = null
 
+        // Set ADSP_LIBRARY_PATH so FastRPC can locate libQnnHtpV79Skel.so from the APK's lib dir.
+        // Without this, the QNN HTP encoder/decoder NPU execution silently fails ("Execution failed
+        // for method: forward") because the DSP can't find the skel via the default search path.
+        try {
+            android.system.Os.setenv(
+                "ADSP_LIBRARY_PATH",
+                applicationInfo.nativeLibraryDir,
+                true,
+            )
+            Log.i(TAG, "ADSP_LIBRARY_PATH=${applicationInfo.nativeLibraryDir}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not set ADSP_LIBRARY_PATH (non-fatal)", t)
+        }
+
         val describer = SceneDescribers.create(this)
         val spatialMemory = SpatialMemory(applicationContext)
         modeManager = ModeManager(
