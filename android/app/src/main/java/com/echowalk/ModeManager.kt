@@ -52,6 +52,8 @@ class ModeManager(
     private val places: PlaceNavigator,
     private val audio: AudioOutputManager,
     private val onStatus: (Status) -> Unit = {},
+    /** Optional secondary observer — receives every RadarState for overlay/debug use. */
+    val onRadarStateExtra: ((RadarState) -> Unit)? = null,
 ) {
     enum class Phase { READY, CAPTURING, THINKING, SPEAKING }
 
@@ -102,10 +104,10 @@ class ModeManager(
 
     private fun onRadarState(state: RadarState) {
         latestRadarState = state
+        onRadarStateExtra?.invoke(state)
         // SpatialAudioEngine consumes RadarState directly inside SafetyRadarController.
         // Here we layer the slow semantic channels on top.
         if (mode == AppMode.NAVIGATING || mode == AppMode.FINDING) {
-            // In Find mode only pass safety-critical events (drop-off, flat wall); mute object noise.
             voiceWarning.process(state, safetyOnlyMode = mode == AppMode.FINDING)
         }
         if (mode == AppMode.FINDING) {

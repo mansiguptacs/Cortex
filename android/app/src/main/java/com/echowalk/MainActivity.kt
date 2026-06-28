@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var modeManager: ModeManager
     private lateinit var speechInput: SpeechInputController
     private lateinit var radar: SafetyRadarController
+    private lateinit var overlay: ObjectOverlayView
 
     private lateinit var previewView: PreviewView
     private lateinit var statusText: TextView
@@ -71,6 +72,7 @@ class MainActivity : AppCompatActivity() {
         describeButton = findViewById(R.id.describeButton)
         findButton = findViewById(R.id.findButton)
         ambientSwitch = findViewById(R.id.ambientSwitch)
+        overlay = findViewById(R.id.overlayContainer)
 
         frames = CameraXFrameProvider(this)
         audio = AudioOutputManager(this).also { it.init() }
@@ -86,7 +88,8 @@ class MainActivity : AppCompatActivity() {
         val radar = SafetyRadarController(frames, depthMod, yoloMod, spatial, labels)
         this.radar = radar
 
-        // VLM if `vlm.pte` is bundled, else classifier if `classifier.pte`+`labels.txt`, else Mock.
+        var currentFindTarget: String? = null
+
         val describer = SceneDescribers.create(this)
         modeManager = ModeManager(
             frames = frames,
@@ -96,8 +99,22 @@ class MainActivity : AppCompatActivity() {
             places = NoopPlaceNavigator(),
             audio = audio,
             onStatus = ::onStatus,
+            onRadarStateExtra = { state ->
+                // Update bounding box overlay on every radar tick.
+                val target = currentFindTarget
+                val boxes = state.hazards.map { h ->
+                    ObjectOverlayView.Box(
+                        label = h.cls,
+                        x0 = h.boxX0, y0 = h.boxY0,
+                        x1 = h.boxX1, y1 = h.boxY1,
+                        isTarget = (target != null && h.cls == target),
+                    )
+                }
+                overlay.update(boxes)
+            },
         )
         speechInput = SpeechInputController(this, audio) { targetClass ->
+            currentFindTarget = targetClass
             modeManager.startFind(targetClass)
         }
 
@@ -106,11 +123,19 @@ class MainActivity : AppCompatActivity() {
 
         // Find mode: hold to speak your query ("find the chair"), release to search.
         findButton.setOnLongClickListener {
-            if (modeManager.isInFindMode) { modeManager.stopFind(); true }
-            else { speechInput.startListening(); true }
+            if (modeManager.isInFindMode) {
+                currentFindTarget = null
+                overlay.update(emptyList())
+                modeManager.stopFind()
+                true
+            } else { speechInput.startListening(); true }
         }
         findButton.setOnClickListener {
-            if (modeManager.isInFindMode) modeManager.stopFind()
+            if (modeManager.isInFindMode) {
+                currentFindTarget = null
+                overlay.update(emptyList())
+                modeManager.stopFind()
+            }
         }
 
         // Eyes-free: tap anywhere on the preview to describe, double-tap to repeat.

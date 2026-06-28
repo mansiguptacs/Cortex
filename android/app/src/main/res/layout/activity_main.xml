@@ -16,8 +16,8 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Team A may draw a depth/detection overlay on top of this. -->
-    <View
+    <!-- Bounding-box detection overlay drawn on top of the camera preview. -->
+    <com.echowalk.ObjectOverlayView
         android:id="@+id/overlayContainer"
         android:layout_width="0dp"
         android:layout_height="0dp"

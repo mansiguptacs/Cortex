@@ -124,9 +124,18 @@ class FindModeController(
         lastSeenMs = now
         lastElevationDeg = target.elevationDeg
 
-        if (target.distanceM >= REACH_DEPTH && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
-            audio.speak("The ${friendlyName(targetClass)} is very close — you can reach it now.", flush = false)
+        // Box-area proximity check: when the object fills enough of the frame → grab it.
+        if (target.boxArea >= BOX_AREA_GRAB && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG) {
+            audio.speak("You're very close — reach out and grab the ${friendlyName(targetClass)}!", flush = false)
             onFound()
+            return
+        }
+        // Intermediate close hint (box approaching grab size)
+        if (target.boxArea >= BOX_AREA_NEAR && kotlin.math.abs(target.azimuthDeg) <= FOUND_AZ_DEG
+            && now - lastGuidanceMs > GUIDANCE_RATE_MS) {
+            audio.speak("Almost there — the ${friendlyName(targetClass)} is right in front of you.", flush = false)
+            lastGuidanceMs = now
+            lastPhrase = "almost"
             return
         }
 
@@ -222,7 +231,9 @@ class FindModeController(
         private const val ELEV_TILT_THRESHOLD      = 12f     // degrees — tilt guidance threshold
         private const val FOUND_AZ_DEG            = 25f
         private const val NEAR_DEPTH              = 6.5f    // transition NAVIGATE→REACH
-        private const val REACH_DEPTH             = 7.5f    // declare arrived (very close)
+        private const val REACH_DEPTH             = 7.5f    // depth-based arrived threshold (backup)
+        private const val BOX_AREA_NEAR           = 0.12f   // ~35% width box → "almost there"
+        private const val BOX_AREA_GRAB           = 0.22f   // ~47% width box → "reach out and grab it"
         private const val GUIDANCE_RATE_MS        = 2_000L
         private const val REPEAT_SAME_RATE_MS     = 4_000L
         private const val LOST_TIMEOUT_MS         = 3_500L  // NAVIGATE: wait longer before "lost it"
