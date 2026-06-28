@@ -81,6 +81,7 @@ class FindModeController(
             return
         }
         lastSeenMs = now
+        lastElevationDeg = target.elevationDeg
         if (distanceWindow.size >= TREND_WINDOW) distanceWindow.removeFirst()
         distanceWindow.addLast(target.distanceM)
 
@@ -93,7 +94,7 @@ class FindModeController(
         }
 
         if (now - lastGuidanceMs < GUIDANCE_RATE_MS) return
-        val phrase = buildNavigationPhrase(target.azimuthDeg, target.distanceM)
+        val phrase = buildCenteringPhrase(target.azimuthDeg, target.elevationDeg, target.distanceM)
         if (phrase == lastPhrase && now - lastGuidanceMs < REPEAT_SAME_RATE_MS) return
         lastGuidanceMs = now
         lastPhrase = phrase
@@ -180,19 +181,34 @@ class FindModeController(
         }
     }
 
-    private fun buildNavigationPhrase(azimuthDeg: Float, distanceM: Float): String {
-        return when {
-            azimuthDeg < -AZ_THRESHOLD -> "Turn left"
-            azimuthDeg >  AZ_THRESHOLD -> "Turn right"
-            else -> {
-                val trend = distanceTrend()
-                when {
-                    trend == Trend.APPROACHING -> "Getting closer — keep going"
-                    trend == Trend.RECEDING    -> "Getting farther — try turning"
-                    distanceM >= 6f            -> "Walk forward"
-                    else                       -> "Walk forward slowly"
-                }
+    /** Combined left/right + tilt guidance to keep target centered in frame. */
+    private fun buildCenteringPhrase(azDeg: Float, elDeg: Float, distanceM: Float): String {
+        val h = when {
+            azDeg < -40f -> "Turn sharply left"
+            azDeg < -AZ_THRESHOLD -> "Turn left"
+            azDeg < -8f  -> "Slightly left"
+            azDeg >  40f -> "Turn sharply right"
+            azDeg >  AZ_THRESHOLD -> "Turn right"
+            azDeg >  8f  -> "Slightly right"
+            else -> null
+        }
+        val v = when {
+            elDeg < -ELEV_TILT_THRESHOLD -> "tilt down"
+            elDeg >  ELEV_TILT_THRESHOLD -> "tilt up"
+            else -> null
+        }
+        // If centered horizontally and vertically, give forward/distance guidance
+        if (h == null && v == null) {
+            return when (distanceTrend()) {
+                Trend.APPROACHING -> "Keep going"
+                Trend.RECEDING    -> "You're moving away — stop and turn"
+                Trend.STABLE      -> if (distanceM >= 6f) "Walk forward" else "Walk forward slowly"
             }
+        }
+        return when {
+            h != null && v != null -> "$h and $v"
+            h != null -> h
+            else -> v!!.replaceFirstChar { it.uppercase() }
         }
     }
 
@@ -234,8 +250,8 @@ class FindModeController(
         private const val REACH_DEPTH             = 7.5f    // depth-based arrived threshold (backup)
         private const val BOX_AREA_NEAR           = 0.12f   // ~35% width box → "almost there"
         private const val BOX_AREA_GRAB           = 0.22f   // ~47% width box → "reach out and grab it"
-        private const val GUIDANCE_RATE_MS        = 2_000L
-        private const val REPEAT_SAME_RATE_MS     = 4_000L
+        private const val GUIDANCE_RATE_MS        = 1_200L  // faster feedback for centering
+        private const val REPEAT_SAME_RATE_MS     = 3_000L
         private const val LOST_TIMEOUT_MS         = 3_500L  // NAVIGATE: wait longer before "lost it"
         private const val REACH_LOST_GRACE_MS     = 4_000L  // REACH: if gone within 4s → declare found
         private const val AUTO_EXIT_MS            = 12_000L // longer grace before giving up
