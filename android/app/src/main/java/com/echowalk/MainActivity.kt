@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.GestureDetector
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
@@ -29,8 +30,10 @@ import com.echowalk.teamb.vlm.SceneDescribers
  *  - Double-tap the preview / long-press the button -> repeat the last description.
  *  - "Auto-describe" toggle -> hands-free ambient mode (announces confident scene changes only).
  *
- * Volume keys are intentionally left to the system so the user can still adjust volume; the
- * full-screen tap target is the eyes-free trigger.
+ * Volume key shortcuts (eyes-free, works with screen off):
+ *  - Long-press Volume Up   → Describe scene
+ *  - Long-press Volume Down → Find mode (starts voice query)
+ *  - Short press            → normal system volume (not consumed)
  *
  * Team A (safety radar) and Team C (familiar places) are wired through the same [ModeManager] via
  * no-op stubs ([NoopSafetyRadar] / [NoopPlaceNavigator]) until they integrate — swapping them in is
@@ -205,6 +208,54 @@ class MainActivity : AppCompatActivity() {
         if (::audio.isInitialized) audio.shutdown()
         if (::speechInput.isInitialized) speechInput.release()
         super.onDestroy()
+    }
+
+    // --- Volume key shortcuts (eyes-free hardware triggers) ----------------------------
+
+    // onKeyDown must return true for the volume keys we care about so Android knows we
+    // want long-press callbacks; for all other keys fall through to the system.
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (!::modeManager.isInitialized) return super.onKeyDown(keyCode, event)
+        return when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                event?.startTracking() // required for onKeyLongPress to fire
+                true                   // consume the down event
+            }
+            else -> super.onKeyDown(keyCode, event)
+        }
+    }
+
+    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
+        if (!::modeManager.isInitialized) return super.onKeyLongPress(keyCode, event)
+        return when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP -> {
+                // Long-press Vol+ → Describe scene
+                audio.haptic(40)
+                modeManager.describeScene()
+                true
+            }
+            KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                // Long-press Vol- → Find mode (start voice query)
+                audio.haptic(40)
+                if (modeManager.isInFindMode) {
+                    modeManager.stopFind()
+                } else {
+                    if (::speechInput.isInitialized) speechInput.startListening()
+                }
+                true
+            }
+            else -> super.onKeyLongPress(keyCode, event)
+        }
+    }
+
+    // Short press: let the key up through so system handles volume normally.
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            // Only pass to system if no long-press was detected
+            if (event?.isLongPress == false) return super.onKeyUp(keyCode, event)
+            return true // long-press already handled — swallow the up
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     companion object {
