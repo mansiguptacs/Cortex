@@ -52,9 +52,9 @@ class AudioOutputManager(context: Context) {
                 tts?.setOnUtteranceProgressListener(progressListener)
                 tts?.setSpeechRate(1.1f) // slightly faster = snappier for navigation alerts
                 ttsReady = true
-                // Fire a silent warmup utterance so the first real phrase has no cold-start lag.
+                // Warmup utterance — also greets the user on launch.
                 val id = "warmup-${System.nanoTime()}"
-                tts?.speak(" ", TextToSpeech.QUEUE_FLUSH, null, id)
+                tts?.speak("Hello, welcome to Cortex app", TextToSpeech.QUEUE_FLUSH, null, id)
             }
         }
     }
