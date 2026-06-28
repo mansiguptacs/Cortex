@@ -85,6 +85,15 @@ class ModeManager(
     @Volatile
     private var latestRadarState: RadarState? = null
 
+    /** Guards the one-time spoken onboarding (welcome + instructions + first orientation). */
+    @Volatile
+    private var onboarded = false
+
+    /** True while the launch onboarding script is speaking — suppresses radar warnings so the
+     *  intro isn't interrupted mid-sentence. */
+    @Volatile
+    private var onboarding = false
+
     /** True when the describer can rank scenes cheaply enough for ambient (auto) mode. */
     val ambientSupported: Boolean get() = describer is AmbientScene
 
@@ -97,6 +106,41 @@ class ModeManager(
         emit(Phase.READY, idleMessage(), null)
     }
 
+    /**
+     * Spoken, interactive onboarding — Team A's core experience, front and center. Runs once when
+     * the TTS engine becomes ready: greets the user, explains the eyes-free controls, then speaks an
+     * immediate orientation of what the safety radar can already see ("Around you, I see a chair on
+     * your left…"). Radar voice warnings are held until this finishes so the intro isn't clipped.
+     */
+    fun onboard() {
+        if (onboarded) return
+        onboarded = true
+        onboarding = true
+        scope.launch {
+            try {
+                speakAwait(WELCOME, Phase.SPEAKING)
+                speakAwait(INSTRUCTIONS, Phase.SPEAKING)
+                // Give the radar a moment to produce its first detections, then orient the user.
+                val orientation = firstOrientation()
+                if (orientation != null) speakAwait("Around you, $orientation", Phase.SPEAKING)
+                else speakAwait("Go ahead and start walking. I'll let you know what I see.", Phase.SPEAKING)
+            } finally {
+                onboarding = false
+                emit(Phase.READY, idleMessage(), null)
+            }
+        }
+    }
+
+    /** Poll the radar briefly for its first object detections so we can speak an opening orientation. */
+    private suspend fun firstOrientation(): String? {
+        repeat(ORIENTATION_TRIES) {
+            val objects = buildYoloObjects()
+            if (objects.isNotBlank()) return objects
+            delay(ORIENTATION_POLL_MS)
+        }
+        return null
+    }
+
     private fun enterNavigating() {
         mode = AppMode.NAVIGATING
         radar.start()
@@ -107,7 +151,7 @@ class ModeManager(
         onRadarStateExtra?.invoke(state)
         // SpatialAudioEngine consumes RadarState directly inside SafetyRadarController.
         // Here we layer the slow semantic channels on top.
-        if (mode == AppMode.NAVIGATING || mode == AppMode.FINDING) {
+        if (!onboarding && (mode == AppMode.NAVIGATING || mode == AppMode.FINDING)) {
             voiceWarning.process(state, safetyOnlyMode = mode == AppMode.FINDING)
         }
         if (mode == AppMode.FINDING) {
@@ -166,12 +210,15 @@ class ModeManager(
                 val modelText = withContext(Dispatchers.Default) { describer.describe(burst) }
                 val latencyMs = (System.nanoTime() - startNs) / 1_000_000
 
-                // Use YOLO fallback when: no real model is loaded (engineLabel==MOCK),
-                // or the model returned blank/placeholder text.
-                val text = if (engineLabel == "MOCK" || modelText.isBlank()) {
-                    buildYoloDescription()
-                } else {
-                    modelText
+                // Pair the scene label with live YOLO object directions so the user hears both
+                // "what room this looks like" and "what's around me, and where". When no real scene
+                // model is loaded (MOCK) or it returned blank, lead with the objects alone.
+                val objects = buildYoloObjects()
+                val text = when {
+                    engineLabel == "MOCK" || modelText.isBlank() ->
+                        objects.ifBlank { "I don't see any recognisable objects right now." }
+                    objects.isNotBlank() -> "$modelText $objects"
+                    else -> modelText
                 }
 
                 lastDescription = text
@@ -186,10 +233,14 @@ class ModeManager(
         }
     }
 
-    /** Build a spoken description from the latest YOLO detections — works with zero extra models. */
-    private fun buildYoloDescription(): String {
-        val state = latestRadarState
-        if (state == null || state.hazards.isEmpty()) return "I don't see any recognisable objects right now."
+    /**
+     * Build an object-level phrase from the latest YOLO detections (e.g. "I see a couch on your
+     * left, and a tv ahead."). Returns "" when nothing is detected, so callers can decide whether
+     * to lead with it or append it to a scene label. Works with zero extra models.
+     */
+    private fun buildYoloObjects(): String {
+        val state = latestRadarState ?: return ""
+        if (state.hazards.isEmpty()) return ""
         // Group by class, deduplicate, sort by closest (highest distanceM = closest in relative depth).
         val grouped = state.hazards
             .groupBy { it.cls }
@@ -382,5 +433,16 @@ class ModeManager(
         const val BURST_COUNT = 4        // frames sampled per describe for temporal voting
         const val BURST_GAP_MS = 70L     // spacing between samples (~210ms total window)
         const val AMBIENT_PERIOD_MS = 700L // ambient classify cadence (~1.4 Hz)
+
+        const val ORIENTATION_TRIES = 12   // poll the radar up to ~4.8s for first detections
+        const val ORIENTATION_POLL_MS = 400L
+
+        // Spoken onboarding script — keep it brief, friendly, and instructional.
+        const val WELCOME =
+            "Welcome to Cortex, your walking companion. I'm watching the space around you and " +
+            "I'll speak up about obstacles as you move."
+        const val INSTRUCTIONS =
+            "To describe the scene, tap the screen or long-press volume up. To find something, " +
+            "long-press volume down and tell me what you're looking for."
     }
 }

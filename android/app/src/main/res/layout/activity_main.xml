@@ -5,8 +5,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <!-- Shared camera preview (FrameProvider owns the CameraX session).
-         Tap anywhere to describe; double-tap (or long-press the button) to repeat. -->
+    <!-- Shared camera preview (FrameProvider owns the CameraX session). -->
     <androidx.camera.view.PreviewView
         android:id="@+id/previewView"
         android:layout_width="0dp"
@@ -16,7 +15,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Bounding-box detection overlay drawn on top of the camera preview. -->
+    <!-- TEAM A (primary): live YOLO bounding boxes drawn over the camera preview. -->
     <com.echowalk.ObjectOverlayView
         android:id="@+id/overlayContainer"
         android:layout_width="0dp"
@@ -26,76 +25,108 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- Demo HUD: active engine + last inference latency + top predictions. -->
+    <!-- TEAM A (primary): always-on safety radar banner. Shows the live hazard + direction and
+         the depth zones / inference latency so the continuous obstacle-avoidance loop is the
+         front-and-center experience. -->
+    <TextView
+        android:id="@+id/radarStatus"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_margin="12dp"
+        android:padding="14dp"
+        android:background="#B3000000"
+        android:textColor="#FFFFFF"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:lineSpacingExtra="3dp"
+        android:text="@string/radar_starting"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Demo HUD: scene engine + latency + top predictions (secondary / debug, hidden by default). -->
     <TextView
         android:id="@+id/hudText"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_margin="10dp"
+        android:layout_margin="12dp"
         android:background="#99000000"
         android:padding="8dp"
         android:fontFamily="monospace"
         android:textColor="#FF66FF99"
-        android:textSize="13sp"
+        android:textSize="12sp"
         android:lineSpacingExtra="2dp"
         android:text="HUD"
         android:visibility="gone"
-        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/radarStatus"
         app:layout_constraintStart_toStartOf="parent" />
 
+    <!-- Transient status line: spoken describe / find guidance echoed on screen. -->
     <TextView
         android:id="@+id/statusText"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_margin="16dp"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginBottom="10dp"
         android:padding="10dp"
         android:background="#80000000"
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
+        android:textSize="15sp"
         android:text="@string/status_idle"
-        app:layout_constraintBottom_toTopOf="@id/ambientSwitch"
+        app:layout_constraintBottom_toTopOf="@id/sceneRow"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <Switch
-        android:id="@+id/ambientSwitch"
+    <!-- TEAM B (side feature): compact scene-description row — a small "Describe" button plus the
+         opt-in auto-describe toggle. Kept deliberately small so the safety radar + Find stay primary. -->
+    <LinearLayout
+        android:id="@+id/sceneRow"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
         android:layout_marginHorizontal="16dp"
-        android:paddingVertical="8dp"
-        android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:text="Auto-describe (ambient)"
-        app:layout_constraintBottom_toTopOf="@id/describeButton"
+        android:layout_marginBottom="10dp"
+        app:layout_constraintBottom_toTopOf="@id/findButton"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        app:layout_constraintEnd_toEndOf="parent">
 
-    <!-- Large, accessibility-friendly action button (Team B describe / hotkey alternative). -->
-    <Button
-        android:id="@+id/describeButton"
-        android:layout_width="0dp"
-        android:layout_height="96dp"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="8dp"
-        android:layout_marginBottom="16dp"
-        android:text="@string/btn_describe"
-        android:textSize="22sp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toStartOf="@id/findButton" />
+        <Button
+            android:id="@+id/describeButton"
+            style="?android:attr/buttonBarButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="52dp"
+            android:text="@string/btn_describe"
+            android:textSize="15sp"
+            android:textColor="#FFFFFF" />
 
-    <!-- Find mode: long-press to speak a query ("find the chair"), tap to exit. -->
+        <Switch
+            android:id="@+id/ambientSwitch"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:saveEnabled="false"
+            android:textColor="#E6FFFFFF"
+            android:textSize="14sp"
+            android:text="@string/switch_auto_describe" />
+    </LinearLayout>
+
+    <!-- TEAM A (primary action): large, accessibility-friendly Find button — voice-driven object
+         search that rides Team A's YOLO + depth radar. Long-press to speak ("find the chair"). -->
     <Button
         android:id="@+id/findButton"
         android:layout_width="0dp"
-        android:layout_height="96dp"
-        android:layout_marginStart="8dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="16dp"
-        android:text="🔍 Find"
-        android:textSize="18sp"
+        android:layout_height="112dp"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginBottom="18dp"
+        android:text="@string/btn_find"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:backgroundTint="#5B4FE0"
+        android:textColor="#FFFFFF"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toEndOf="@id/describeButton"
+        app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

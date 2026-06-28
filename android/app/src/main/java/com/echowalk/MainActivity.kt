@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var statusText: TextView
     private lateinit var hudText: TextView
+    private lateinit var radarStatus: TextView
     private lateinit var describeButton: Button
     private lateinit var findButton: Button
     private lateinit var ambientSwitch: Switch
@@ -87,13 +88,14 @@ class MainActivity : AppCompatActivity() {
         previewView = findViewById(R.id.previewView)
         statusText = findViewById(R.id.statusText)
         hudText = findViewById(R.id.hudText)
+        radarStatus = findViewById(R.id.radarStatus)
         describeButton = findViewById(R.id.describeButton)
         findButton = findViewById(R.id.findButton)
         ambientSwitch = findViewById(R.id.ambientSwitch)
         overlay = findViewById(R.id.overlayContainer)
 
         frames = CameraXFrameProvider(this)
-        audio = AudioOutputManager(this).also { it.init() }
+        audio = AudioOutputManager(this) // init() deferred until modeManager exists (drives onboarding)
 
         // Team A: load depth + YOLO models onto Hexagon NPU (graceful null if assets missing).
         val spatial = SpatialAudioEngine(audio)
@@ -129,12 +131,17 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
                 overlay.update(boxes)
+                updateRadarBanner(state)
             },
         )
         speechInput = SpeechInputController(this, audio) { targetClass ->
             currentFindTarget = targetClass
             modeManager.startFind(targetClass)
         }
+
+        // Bring up speech now that ModeManager exists; when TTS is ready it speaks the onboarding
+        // script (welcome + controls + first orientation) — the interactive, spoken core up front.
+        audio.init { modeManager.onboard() }
 
         describeButton.setOnClickListener { modeManager.describeScene() }
         describeButton.setOnLongClickListener { modeManager.repeatLast(); true }
@@ -167,7 +174,11 @@ class MainActivity : AppCompatActivity() {
         })
         previewView.setOnTouchListener { _, ev -> gestures.onTouchEvent(ev); true }
 
-        // Ambient (auto) mode is only offered when the engine can rank scenes cheaply.
+        // Scene description is a side feature: auto-describe is OFF by default so Team A's safety
+        // radar (spatial tones + voice warnings) stays the primary, uninterrupted audio channel.
+        // The user can opt in any time. Set the state before wiring the listener so we don't
+        // accidentally start ambient mode here.
+        ambientSwitch.isChecked = false
         if (modeManager.ambientSupported) {
             ambientSwitch.setOnCheckedChangeListener { _, on ->
                 if (on) modeManager.startAmbient() else modeManager.stopAmbient()
@@ -184,6 +195,33 @@ class MainActivity : AppCompatActivity() {
     private fun startCamera() {
         frames.bind(this, previewView)
         modeManager.start()
+    }
+
+    /**
+     * Team A front-and-center: turn each [com.echowalk.teama.RadarState] into a live safety banner
+     * (nearest hazard + direction on top, depth zones + NPU latency underneath). Invoked from the
+     * radar's inference thread, so marshal to the UI.
+     */
+    private fun updateRadarBanner(state: com.echowalk.teama.RadarState) {
+        // "Closest" hazard = highest relative-depth value (depth is relative; larger = nearer).
+        val nearest = state.hazards.maxByOrNull { it.distanceM }
+        val headline = if (nearest != null) {
+            val dir = when {
+                nearest.azimuthDeg < -13f -> "on your left"
+                nearest.azimuthDeg > 13f -> "on your right"
+                else -> "ahead"
+            }
+            "\u26A0  ${nearest.cls.replaceFirstChar { it.uppercase() }} $dir"
+        } else {
+            "\u25CF  Path clear"
+        }
+        val zones = state.zoneNearestM.joinToString(" \u00B7 ") {
+            if (it.isFinite()) "%.1f".format(it) else "\u2014"
+        }
+        val detail = "Safety radar  \u00B7  zones $zones  \u00B7  ${radar.lastInferenceMs} ms"
+        runOnUiThread {
+            radarStatus.text = "$headline\n$detail"
+        }
     }
 
     /** Render a [ModeManager.Status]. Invoked from a background coroutine -> marshal to the UI. */

@@ -2,5 +2,8 @@
     <string name="app_name">EchoWalk</string>
     <string name="status_idle">EchoWalk ready</string>
     <string name="btn_describe">Describe scene</string>
+    <string name="btn_find">\uD83D\uDD0D  Find object</string>
     <string name="btn_enroll">Enroll place</string>
+    <string name="radar_starting">Safety radar starting…</string>
+    <string name="switch_auto_describe">Auto-describe</string>
 </resources>

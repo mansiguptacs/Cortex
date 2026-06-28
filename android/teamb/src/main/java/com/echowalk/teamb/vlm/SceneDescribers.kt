@@ -14,12 +14,16 @@ import com.echowalk.teamb.SceneDescriber
 object SceneDescribers {
 
     fun create(context: Context): SceneDescriber =
-        LlmModuleSceneDescriber.create(
+        // NOTE: The SmolVLM LlmModule path is intentionally disabled. The bundled SmolVLM `.pte`
+        // files were exported against a QNN/ExecuTorch build that mismatches this app's runtime, so
+        // the encoder forward fails at inference (ExecuTorch Error 0x10) and we'd silently fall back
+        // anyway — after a ~1s stall, and with ambient (auto) mode unavailable (a VLM isn't an
+        // AmbientScene). Until the PTEs are re-exported against a matching commit, go straight to the
+        // Places365 scene classifier: it's fast, supports ambient mode, and ModeManager pairs its
+        // scene label with live YOLO object directions ("couch on your left, tv ahead").
+        ClassifierSceneDescriber.create(
             context,
-            fallback = ClassifierSceneDescriber.create(
-                context,
-                fallback = MockSceneDescriber(),
-            ),
+            fallback = MockSceneDescriber(),
         )
 
     /** Short tag for the UI/logs describing which engine actually got built. */
