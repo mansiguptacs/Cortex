@@ -7,7 +7,7 @@ todos:
     status: pending
   - id: s1
     content: "[SHARED] App skeleton + interface contracts: CameraX FrameProvider, EtModule helper, ModeManager, AudioOutputManager, SafetyRadar + SceneDescriber interfaces with stubs. TEST: app builds, shows camera, both stubbed modes invokable."
-    status: pending
+    status: completed
   - id: a1
     content: "[TEAM A] Export depth + YOLO nano to QNN .pte and validate on device. TEST: both run on NPU via adb with sane outputs."
     status: completed
@@ -22,15 +22,21 @@ todos:
     status: completed
   - id: b1
     content: "[TEAM B — Jainil] Export SmolVLM-500M to QNN HTP .pte (+ Llama-3.2-1B fallback .pte if needed). Prefer AI Hub pre-exports. Deliver vlm.pte + tokenizer + I/O spec on branch. TEST: export script runs; artifacts ready for assets/."
-    status: pending
+    status: completed
   - id: b1v
-    content: "[TEAM B — Udit] On-device validation on S25 Ultra: push Jainil's .pte to assets/, run SimpleADB or TeamBHarnessActivity. TEST: VLM produces text from an image on NPU."
-    status: pending
+    content: "[TEAM B — Udit] On-device validation on S25 Ultra: push Jainil's .pte to assets/, run qnn_multimodal_runner via adb. TEST: VLM produces text from an image on NPU. BLOCKED: libQnnHtpV79Skel.so must be QAIRT 2.46.0 (host libs are 2.46, skel was 2.47)."
+    status: in_progress
   - id: b2
-    content: "[TEAM B — Udit] SmolVlmSceneDescriber + TeamBHarnessActivity: load .pte via EtModule, preprocess Frame, decode text, speak via TTS stub. TEST: Describe button returns plausible spoken description."
-    status: pending
+    content: "[TEAM B — Udit] SmolVlmSceneDescriber (3-PTE LlmModule path) + describe pipeline. CPU hedge DONE (Places365 ClassifierSceneDescriber). VLM in-app path NOT wired yet. TEST: Describe returns plausible spoken text."
+    status: in_progress
   - id: b3
-    content: "[TEAM B — Udit] Hotkey + TTS + audio bus: SpeechOutput wrapper, volume-key/tap via ModeManager, route through AudioOutputManager (M6). TEST: press in a room, hear description within a few seconds, fully offline."
+    content: "[TEAM B — Udit] Tap/double-tap + TTS + audio bus via ModeManager in main app (M6). Earcons, ambient auto-describe, temporal voting, confidence narration. Volume key left to system (tap = eyes-free trigger). TEST: tap in a room, hear description offline."
+    status: completed
+  - id: b4
+    content: "[TEAM B — Udit] Wire executorch-qnn.aar + LlmModuleSceneDescriber (3-PTE decode + ScenePrompt). Scaffold DONE; NPU end-to-end pending 2.46.0 skel + stage_vlm_assets.sh."
+    status: in_progress
+  - id: b5
+    content: "[TEAM B — Udit] Prompt tuning + VLM output post-process for blind navigation (layout, objects, path). Optional: fuse Team A YOLO labels into VLM prompt for spatial grounding."
     status: pending
   - id: c0
     content: "[TEAM C] Embedding model on NPU (CLIP/MobileCLIP image encoder) -> vector per frame (M-C0). TEST: same-spot photos high cosine sim, different-spot low."
@@ -45,8 +51,8 @@ todos:
     content: "[TEAM C] Destination guidance: pick saved destination -> sequential waypoint cues + arrival via shared audio bus (M-C3). TEST: from entrance, guided to 'desk' with announced waypoints."
     status: pending
   - id: int1
-    content: "[INTEGRATION] Wire all modules into the shell via ModeManager: radar always-on for safety; PlaceNavigator layers guidance cues; hotkey pauses heavy inference for VLM; AudioOutputManager arbitrates tones/TTS. TEST: mode switching glitch-free, no NPU/audio conflict."
-    status: pending
+    content: "[INTEGRATION] Wire all modules into the shell via ModeManager: radar always-on for safety; PlaceNavigator layers guidance cues; describe pauses heavy inference for VLM; AudioOutputManager arbitrates tones/TTS. Team B DONE in main app; Team A/C still Noop stubs. TEST: mode switching glitch-free, no NPU/audio conflict."
+    status: in_progress
   - id: int2
     content: "[INTEGRATION] M7 demo hardening: calibrate thresholds, freeze build, rehearse. TEST: two full 5-min run-throughs, no crash."
     status: pending
@@ -255,16 +261,45 @@ Rules baked into the contract:
 - **Does not need:** model export or ExecuTorch+QNN compile on host (receives artifacts from Jainil).
 
 #### Handoff checklist (Team B complete when all checked)
-| Item | Owner |
-| --- | --- |
-| `vlm.pte` + tokenizer on branch | Jainil |
-| `export_smolvlm.py` + I/O spec | Jainil |
-| On-device inference works on S25 | Udit |
-| `SmolVlmSceneDescriber` loads model & decodes text | Udit |
-| `TeamBHarnessActivity` speaks description | Udit |
-| Hotkey + TTS + `AudioOutputManager` (M6) | Udit |
+| Item | Owner | Status |
+| --- | --- | --- |
+| 3× `.pte` + tokenizer + I/O spec (`udit-full-handoff`) | Jainil | ✅ Done |
+| `qnn_multimodal_runner` + QNN jniLibs + `executorch-qnn.aar` | Jainil | ✅ Done |
+| **`libQnnHtpV79Skel.so` QAIRT 2.46.0** (version match fix) | Jainil | ⏳ **BLOCKER** |
+| adb NPU inference → real text (`tools/run_smolvlm_device.sh`) | Udit | ⏳ Awaiting skel |
+| `ClassifierSceneDescriber` CPU hedge (Places365) on device | Udit | ✅ Done (~68 ms) |
+| `TeamBHarnessActivity` full UX (tap, ambient, HUD, earcons) | Udit | ✅ Done |
+| `MainActivity` + `ModeManager` integration (Team B in real app) | Udit | ✅ Done |
+| `LlmModule` in-app SmolVLM describer (3-PTE decode) | Udit | ✅ Scaffolded (await skel + on-device test) |
+| Prompt tuning for blind-navigation descriptions | Udit | ❌ Not started |
 
-- **Independent test path:** Udit runs `TeamBHarnessActivity` with Jainil's assets — needs nothing from Team A until fallback tags path. Acceptance = M6 test.
+#### Team B progress log (Udit + Jainil, branch `team-b/scene-description`)
+
+**Done:**
+- **U-Steps 1–3:** Camera → async describe pipeline → UI state machine (READY/CAPTURING/THINKING/SPEAKING) in harness.
+- **CPU hedge:** ResNet18-Places365 exported to XNNPACK `classifier.pte`; `SceneDescribers.create()` factory (VLM → classifier → Mock).
+- **Empathy UX:** Temporal 4-frame voting, navigation vocabulary (`SceneVocabulary`), confidence-aware narration, dark/blur frame guards, earcons + haptics, tap-anywhere + double-tap repeat.
+- **Ambient mode:** Continuous classify with EMA + stability + change-only announcements; thresholds tuned for Places365 (~0.14 announce conf).
+- **Main app shell:** `MainActivity` drives `ModeManager` with full Team B flow; `NoopSafetyRadar` / `NoopPlaceNavigator` until int1 complete.
+- **SmolVLM Phase-1 validation prep:** `tools/run_smolvlm_device.sh` updated for `qnn_multimodal_runner`; validated on S25 up to QNN device init (`-decoder_model_version smolvlm` confirmed).
+
+**Blocked (one file):**
+- NPU init fails: host libs **2.46.0**, skel **2.47.0** → need `libQnnHtpV79Skel.so` from QAIRT 2.46.0. See `ml/teamb/RUNTIME_NEEDED.md`.
+
+**While waiting — high-value Udit tasks (no Jainil dependency):**
+1. ~~**Scaffold in-app VLM path (b4):**~~ ✅ Done — `LlmModuleSceneDescriber`, `executorch-qnn.aar`, `tools/stage_vlm_assets.sh`, `ScenePrompt.kt`.
+2. **Accessibility polish:** TalkBack `contentDescription`s, announce state changes ("Thinking…", "Speaking…"), optional hide HUD for demo mode.
+3. **Describe UX in main app:** Show captured-frame thumbnail (harness has it; main app doesn't yet) so sighted helpers can debug.
+4. **Prompt module:** Centralize VLM prompt strings (`ScenePrompt.kt`) so Jainil/Udit can iterate without touching describer logic.
+5. **Team A hook:** When Team A is ready, swap `NoopSafetyRadar` → `SafetyRadarController` in `MainActivity` (one line); verify `ModeManager` pauses radar during describe.
+6. **Optional richer CPU fallback:** Add MobileNet object-tag classifier alongside Places365 for tap-describe ("I see a chair and a table in a kitchen") — still not spatial, but better than category-only.
+
+**After skel lands (fast path):**
+1. Run `tools/run_smolvlm_device.sh` → confirm NPU text output.
+2. Drop matching skel into handoff; stage assets in APK.
+3. Flip `LlmModuleSceneDescriber` on in factory → manual Describe uses SmolVLM; ambient stays on fast classifier.
+
+- **Independent test path:** Udit runs `TeamBHarnessActivity` or main **EchoWalk** app with classifier assets — needs nothing from Team A until YOLO+Llama fallback or spatial fusion. Acceptance = M6 test with SmolVLM on NPU.
 
 ### Team C — Familiar Places (owns learned-space mode; milestones M-C0..M-C3)
 Helps users navigate places they revisit (classroom, grocery store, office) by learning the space once and guiding them on return. The personal "map" (embeddings + labels) is stored only on the device.

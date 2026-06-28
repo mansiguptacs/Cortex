@@ -9,17 +9,19 @@
 #   hexagon-v79/unsigned/libQnnHtpV79Skel.so  (Hexagon DSP skel for v79 / SM8750)
 #   assets/{vlm_encoder,vlm_text_embedding,vlm_decoder}.pte + assets/tokenizer/
 #
-# IMPORTANT — version match: the Hexagon skel MUST be the SAME QAIRT version as the host libs
-# (libQnnHtp.so / libQnnHtpV79Stub.so). A mismatch fails at device init with:
-#   "Skel lib id mismatch: expected (vX) detected (vY) ... Failed to load skel, error: 1008"
-# As of the first handoff the host libs were 2.46.0 but the skel was 2.47.0 -> needs a 2.46.0 skel.
+# Uses Jainil's handoff for models/runner/ExecuTorch backend, and qnn-runtime-2.46-v79 for
+# version-matched QNN SDK libs + Hexagon skel (v2.46.0).
 #
 # Usage:
-#   HANDOFF=~/Downloads/udit-full-handoff IMAGE=/sdcard/DCIM/Camera/foo.jpg ./tools/run_smolvlm_device.sh
+#   HANDOFF=~/Downloads/udit-full-handoff \
+#   QNN_RUNTIME=~/Downloads/qnn-runtime-2.46-v79 \
+#   IMAGE=/sdcard/DCIM/Camera/foo.jpg \
+#   ./tools/run_smolvlm_device.sh
 #
 set -euo pipefail
 
 HANDOFF="${HANDOFF:-$HOME/Downloads/udit-full-handoff}"
+QNN_RUNTIME="${QNN_RUNTIME:-$HOME/Downloads/qnn-runtime-2.46-v79}"
 DEVICE_DIR="/data/local/tmp/echowalk"
 PROMPT="${PROMPT:-Describe this indoor scene clearly for a blind person. Mention layout, major objects, and anything in the walking path. Keep it to 2-3 sentences.}"
 SEQ_LEN="${SEQ_LEN:-256}"
@@ -29,14 +31,16 @@ IMAGE="${IMAGE:-}"
 adb="${ADB:-adb}"
 
 [ -d "$HANDOFF" ] || { echo "ERROR: HANDOFF not found: $HANDOFF"; exit 1; }
+[ -d "$QNN_RUNTIME" ] || { echo "ERROR: QNN_RUNTIME not found: $QNN_RUNTIME"; exit 1; }
 "$adb" get-state >/dev/null 2>&1 || { echo "ERROR: no adb device. Plug in the S25 (SM8750) and unlock."; exit 1; }
 
 echo ">> staging to $DEVICE_DIR"
 "$adb" shell "mkdir -p $DEVICE_DIR/lib $DEVICE_DIR/tokenizer"
 
-echo ">> pushing QNN libs + Hexagon skel + runner"
-"$adb" push "$HANDOFF/jniLibs/arm64-v8a/." "$DEVICE_DIR/lib/" >/dev/null
-"$adb" push "$HANDOFF/hexagon-v79/unsigned/libQnnHtpV79Skel.so" "$DEVICE_DIR/lib/" >/dev/null
+echo ">> pushing QNN 2.46 libs + skel + ExecuTorch backend + runner"
+"$adb" push "$QNN_RUNTIME/jniLibs/arm64-v8a/." "$DEVICE_DIR/lib/" >/dev/null
+"$adb" push "$QNN_RUNTIME/hexagon-v79/unsigned/libQnnHtpV79Skel.so" "$DEVICE_DIR/lib/" >/dev/null
+"$adb" push "$HANDOFF/jniLibs/arm64-v8a/libqnn_executorch_backend.so" "$DEVICE_DIR/lib/" >/dev/null
 "$adb" push "$HANDOFF/bin/qnn_multimodal_runner" "$DEVICE_DIR/qnn_multimodal_runner" >/dev/null
 "$adb" shell "chmod 755 $DEVICE_DIR/qnn_multimodal_runner"
 

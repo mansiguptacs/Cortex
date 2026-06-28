@@ -1,26 +1,39 @@
 # Model assets drop zone
 
-Put exported `.pte` model files (and any tokenizer/label files) **in this folder**.
-They get bundled into the APK and are reachable at runtime via `context.assets.open("<name>")`,
-which `AssetModels.ensure(...)` stages into `filesDir` for ExecuTorch's `Module.load(path)`.
+Put exported model files here. They ship inside the APK; `AssetModels` copies them into `filesDir` for ExecuTorch `Module.load()` / `LlmModule`.
 
-## Expected filenames (current code looks for these)
+## Quick stage (SmolVLM + QNN libs)
 
-| File                | Used by                                   | Notes |
-|---------------------|-------------------------------------------|-------|
-| `vlm.pte`           | `SmolVlmSceneDescriber` (Team B)          | If present, the harness flips to engine `[VLM]`; otherwise it falls back to `MockSceneDescriber` (engine `[MOCK]`). |
-| `labels.txt`        | classifier/detector decode (if used)      | One class name per line (ImageNet-1k or COCO-80), matching the model's output order. |
-| `tokenizer.*`       | full SmolVLM decode (U-Step 5)            | Only needed for a real autoregressive VLM. |
+```bash
+HANDOFF=~/Downloads/udit-full-handoff ./tools/stage_vlm_assets.sh
+```
 
-> If your export produced **multiple** parts (e.g. SmolVLM's `encoder.pte` +
-> `text_embedding.pte` + `decoder.pte`), drop them all here and tell me — that needs the
-> ExecuTorch multimodal runner, not the single-`forward` path, so the decode wiring differs.
+This copies the 3× SmolVLM `.pte`, tokenizer, QNN `.so` libs, and refreshes `android/libs/executorch-qnn.aar`.
 
-## QNN / NPU note
+## Expected filenames
 
-A QNN-delegated `.pte` also needs matching `libQnn*.so` native libs in
-`app/src/main/jniLibs/arm64-v8a/`, and the QNN **runtime version in the app must match the QNN
-SDK version used at export** (mismatch -> `Error 5000 / Qnn API version mismatched` at load).
-Tell me the QNN SDK version used so I can align `shared/build.gradle.kts`.
+| File | Used by | Notes |
+| --- | --- | --- |
+| `vlm_encoder.pte` | `LlmModuleSceneDescriber` | SmolVLM vision encoder (QNN) |
+| `vlm_text_embedding.pte` | `LlmModuleSceneDescriber` | Token embedding PTE |
+| `vlm_decoder.pte` | `LlmModuleSceneDescriber` | Hybrid LLama decoder PTE |
+| `tokenizer/tokenizer.json` (+ config, chat template) | `LlmModuleSceneDescriber` | HuggingFace tokenizer bundle |
+| `classifier.pte` | `ClassifierSceneDescriber` | Places365 CPU hedge (live today) |
+| `labels.txt` + `classifier_kind.txt` | Classifier | Scene label map |
 
-(This `.md` file is ignored at runtime — only real model assets are loaded.)
+**Engine selection** (`SceneDescribers.create()`):
+
+1. All three VLM `.pte` + tokenizer → **VLM** (`LlmModuleSceneDescriber`)
+2. Else `classifier.pte` + labels → **SCENE** (Places365)
+3. Else → **MOCK**
+
+## QNN native libs (not in assets)
+
+Must also be present under `app/src/main/jniLibs/arm64-v8a/` (gitignored):
+
+- `libQnnHtp.so`, `libQnnHtpV79Stub.so`, `libQnnSystem.so`
+- `libQnnHtpV79Skel.so` — **must match QAIRT version of host libs** (see `ml/teamb/RUNTIME_NEEDED.md`)
+
+The stage script copies these from the handoff. Host libs are **2.46.0**; if your skel is **2.47.0**, NPU init fails until Jainil sends the matching skel.
+
+(This `.md` file is ignored at runtime.)

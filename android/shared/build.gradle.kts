@@ -32,7 +32,12 @@ dependencies {
     api("androidx.camera:camera-lifecycle:$cameraxVersion")
     api("androidx.camera:camera-view:$cameraxVersion")
 
-    // ExecuTorch runtime lives here so the QNN/native setup is in ONE module.
-    // 0.6.0 is the latest on Maven Central (verified). Align QNN .so libs to this version.
-    api("org.pytorch:executorch-android:0.6.0")
+    // ExecuTorch runtime + LlmModule. Prefer the QNN-enabled AAR from Jainil's handoff when present
+    // (includes libqnn_executorch_backend.so); otherwise fall back to Maven Central (CPU/XNNPACK only).
+    val qnnAar = rootProject.file("libs/executorch-qnn.aar")
+    if (qnnAar.exists()) {
+        api(files(qnnAar))
+    } else {
+        api("org.pytorch:executorch-android:0.6.0")
+    }
 }

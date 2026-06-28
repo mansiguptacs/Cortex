@@ -37,10 +37,19 @@ android {
     androidResources {
         // Keep model/tokenizer assets uncompressed so ExecuTorch can mmap them and large .pte
         // files don't bloat install-time decompression.
-        noCompress += listOf("pte", "bin", "json", "model")
+        noCompress += listOf("pte", "bin", "json", "model", "jinja")
     }
-    // QNN .so libraries go in app/src/main/jniLibs/arm64-v8a/.
-    // .pte model files go in app/src/main/assets/ (or are pushed to /data/local/tmp during dev).
+    packaging {
+        jniLibs {
+            pickFirsts += listOf(
+                "**/libexecutorch.so",
+                "**/libqnn_executorch_backend.so",
+                "**/libc++_shared.so",
+            )
+        }
+    }
+    // QNN .so libraries go in app/src/main/jniLibs/arm64-v8a/ (see tools/stage_vlm_assets.sh).
+    // SmolVLM .pte + tokenizer go in app/src/main/assets/ (gitignored; stage from handoff).
 }
 
 dependencies {
@@ -54,5 +63,8 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.activity:activity-ktx:1.9.2")
+    // ExecuTorch AAR (LlmModule + Module) native deps — must init SoLoader in EchoWalkApplication.
+    implementation("com.facebook.soloader:soloader:0.10.5")
+    implementation("com.facebook.fbjni:fbjni:0.6.0")
     // CameraX, ExecuTorch and coroutines come transitively from :shared (declared `api`).
 }
