@@ -25,9 +25,12 @@ class VoiceWarningEngine(private val audio: AudioOutputManager) {
     private val hazardMemory = HashMap<String, HazardMemory>()
 
     private var lastFlatWallMs = 0L
+    private val startedAtMs = System.currentTimeMillis() // grace period starts at construction
 
     fun process(state: RadarState, safetyOnlyMode: Boolean = false) {
         if (audio.isSpeaking()) return
+        // Don't fire any warnings during the startup grace period — phone is still being picked up.
+        if (System.currentTimeMillis() - startedAtMs < STARTUP_GRACE_MS) return
         val now = System.currentTimeMillis()
 
         checkFlatWall(state, now)
@@ -100,6 +103,9 @@ class VoiceWarningEngine(private val audio: AudioOutputManager) {
         private const val FLAT_WALL_ZONE_MAX = 5.0f
         private const val FLAT_WALL_SPREAD_MIN = 2.0f
         private const val FLAT_WALL_RATE_MS = 4_000L
+
+        // Silence all warnings for this long after launch (phone is still being oriented).
+        private const val STARTUP_GRACE_MS = 4_000L
 
         // Don't repeat the same hazard class faster than this.
         private const val HAZARD_REPEAT_MS = 5_000L
