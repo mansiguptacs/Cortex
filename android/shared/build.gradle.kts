@@ -41,4 +41,13 @@ dependencies {
     api("org.tensorflow:tensorflow-lite:2.16.1")
     api("org.tensorflow:tensorflow-lite-support:0.4.4")
     api(files("libs/qnn-tflite-delegate.jar"))
+
+    // ExecuTorch runtime + LlmModule. Prefer the QNN-enabled AAR from Jainil's handoff when present
+    // (includes libqnn_executorch_backend.so); otherwise fall back to Maven Central (CPU/XNNPACK only).
+    val qnnAar = rootProject.file("libs/executorch-qnn.aar")
+    if (qnnAar.exists()) {
+        api(files(qnnAar))
+    } else {
+        api("org.pytorch:executorch-android:0.6.0")
+    }
 }

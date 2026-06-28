@@ -2,8 +2,9 @@
 .gradle/
 android/.gradle/
 android/build/
-android/app/build/
+android/**/build/
 android/local.properties
+.idea/
 android/.idea/
 *.iml
 .DS_Store
@@ -12,15 +13,6 @@ android/.idea/
 android/app/src/main/assets/*.pte
 android/app/src/main/assets/*.bin
 android/app/src/main/jniLibs/
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-ml/**/artifacts/
-*.pte
-.rocketride/
 
 # EchoWalk: large model binaries (download via AI Hub)
 android/app/src/main/jniLibs/arm64-v8a/*.so
@@ -31,13 +23,24 @@ ml/teama/_artifacts/
 ml/teamb/_artifacts/
 ml/teamc/_artifacts/
 
-# Build outputs
-android/.gradle/
-android/**/build/
-android/local.properties
-android/gradle/wrapper/gradle-wrapper.jar
-android/gradlew
-android/gradlew.bat
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+ml/**/artifacts/
+*.pte
+.rocketride/
+
+# Team B local artifacts (not committed)
+ml/teamb/models/
+ml/teamb/exports/
+ml/teamb/handoff/
+ml/teamb/cache/
+ml/teamb/.cache/
+
+# Local scratch (not committed)
+donotcheckin/
 
 # Misc
 .claude/

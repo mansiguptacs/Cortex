@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <!-- Live camera preview with a demo HUD overlay (latency + top predictions).
+         Tap anywhere on the preview to describe; double-tap to repeat the last description. -->
+    <FrameLayout
+        android:id="@+id/previewFrame"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.camera.view.PreviewView
+            android:id="@+id/previewView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/hudText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="10dp"
+            android:background="#99000000"
+            android:padding="8dp"
+            android:fontFamily="monospace"
+            android:textColor="#FF66FF99"
+            android:textSize="13sp"
+            android:lineSpacingExtra="2dp"
+            android:text="HUD"
+            android:visibility="gone" />
+
+    </FrameLayout>
+
+    <!-- The frame captured when "Describe" is tapped (sanity check). -->
+    <ImageView
+        android:id="@+id/capturedThumb"
+        android:layout_width="match_parent"
+        android:layout_height="140dp"
+        android:background="#22000000"
+        android:scaleType="centerInside"
+        android:contentDescription="Captured frame" />
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="12dp"
+        android:textSize="16sp"
+        android:text="Team B harness - point the camera and tap Describe" />
+
+    <Switch
+        android:id="@+id/ambientSwitch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="8dp"
+        android:textSize="16sp"
+        android:text="Auto-describe (ambient)" />
+
+    <Button
+        android:id="@+id/describeButton"
+        android:layout_width="match_parent"
+        android:layout_height="88dp"
+        android:layout_margin="12dp"
+        android:textSize="22sp"
+        android:text="Describe scene" />
+
+</LinearLayout>
